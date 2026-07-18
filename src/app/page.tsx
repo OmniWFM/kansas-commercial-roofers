@@ -214,7 +214,7 @@ export default function Home() {
             Kansas Commercial Roofers is a Kansas-based commercial roofing team
             built on a culture of care for our people and our customers. From
             complex low-slope installs to emergency repairs, no job is outside
-            our wheelhouse \u2014 we bring experience, precision, and a commitment
+            our wheelhouse &mdash; we bring experience, precision, and a commitment
             to protecting your building for the long run.
           </p>
           <div className="rise mt-10 flex flex-wrap items-center gap-4" style={{ animationDelay: "0.52s" }}>
@@ -272,7 +272,7 @@ export default function Home() {
             </h2>
             <p className="mt-5 text-muted">
               With decades of combined experience across market sectors, our team
-              is prepared to deliver the best value and solution \u2014 regardless of
+              is prepared to deliver the best value and solution &mdash; regardless of
               the project's complexity.
             </p>
           </div>
@@ -307,7 +307,7 @@ export default function Home() {
             </h2>
             <p className="mt-5 text-muted">
               From warehouses and food processing plants to schools, hospitals,
-              and federal facilities \u2014 we've roofed the full range of commercial
+              and federal facilities &mdash; we've roofed the full range of commercial
               and industrial property across the state.
             </p>
           </div>
@@ -391,7 +391,7 @@ export default function Home() {
               Join the property owners and facility managers who trust Kansas
               Commercial Roofers to protect their buildings. Whether you're
               starting a new project or maintaining an existing structure, our
-              team is ready to help \u2014 with precision and professionalism.
+              team is ready to help &mdash; with precision and professionalism.
             </p>
             <div className="mt-9 flex flex-wrap items-center gap-4">
               <a
