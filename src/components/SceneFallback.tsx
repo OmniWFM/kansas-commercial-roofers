@@ -1,12 +1,39 @@
 /* Designed fallback shown while the 3D scroll scene loads, when WebGL is
    unavailable, and for prefers-reduced-motion users. Fixed behind the page in
-   the same palette/mood as the live scene: a technical blueprint sketch of a
-   LONG low-slope commercial building — structural bay grid, open roof joists,
-   loading docks, and the roof assembly labeled layer by layer
-   (deck / insulation / red membrane / edge metal). Static — never breaks. */
+   the same palette/mood as the live scene: an ISOMETRIC technical cutaway of a
+   commercial building with one roof corner peeled open, and the roof assembly
+   drawn as a separated, labeled exploded stack
+   (steel deck / insulation / cover board / red membrane / edge metal).
+   Static — never breaks. */
 export default function SceneFallback() {
-  const BAYS = 6;
-  const bayW = 760 / BAYS; // long elevation width in svg units
+  const LINE = "#F4F2EE";
+  const RED = "#C8262B";
+
+  // Isometric projection helper: map (x, y, z) grid coords to 2D svg points.
+  // 30-degree iso: x goes right+down, z goes left+down, y goes straight up.
+  const ISO_X = 26; // horizontal step per x/z unit
+  const ISO_Y = 15; // vertical step per x/z unit
+  const UNIT_UP = 30; // vertical step per y unit (height)
+  const ox = 600;
+  const oy = 430;
+  const P = (x: number, y: number, z: number) => {
+    const px = ox + (x - z) * ISO_X;
+    const py = oy + (x + z) * ISO_Y - y * UNIT_UP;
+    return `${px.toFixed(1)},${py.toFixed(1)}`;
+  };
+
+  // Footprint half-extents (grid units).
+  const W = 6; // x half
+  const D = 4; // z half
+  const H = 2.4; // wall height (y units)
+
+  // A flat quad at height y spanning the footprint (roof plane).
+  const roofQuad = (y: number) =>
+    `${P(-W, y, -D)} ${P(W, y, -D)} ${P(W, y, D)} ${P(-W, y, D)}`;
+
+  // Exploded roof-layer quads floating above the plane at increasing heights.
+  const layer = (y: number) =>
+    `${P(-W, y, -D)} ${P(W, y, -D)} ${P(W, y, D)} ${P(-W, y, D)}`;
 
   return (
     <div className="absolute inset-0" aria-hidden="true">
@@ -33,103 +60,83 @@ export default function SceneFallback() {
           ))}
         </g>
 
-        {/* long commercial building — elevation blueprint, walls up, roof assembling */}
-        <g
-          transform="translate(220 300)"
-          stroke="#F4F2EE"
-          strokeWidth="1.6"
-          strokeLinejoin="round"
-        >
-          {/* wall block (translucent fill), long and low */}
-          <rect
-            x="0"
-            y="140"
-            width="760"
-            height="200"
-            fill="rgba(31,31,35,0.55)"
-            stroke="#F4F2EE"
-            strokeOpacity="0.85"
-          />
-
-          {/* structural column bay lines */}
-          {Array.from({ length: BAYS + 1 }).map((_, i) => (
-            <line
-              key={`col${i}`}
-              x1={i * bayW}
-              y1="140"
-              x2={i * bayW}
-              y2="340"
-              stroke="#F4F2EE"
-              strokeOpacity="0.5"
+        <g strokeLinejoin="round" strokeLinecap="round">
+          {/* ---- building shell: four vertical wall edges (iso wireframe) ---- */}
+          <g stroke={LINE} strokeWidth="1.6" strokeOpacity="0.85">
+            <polyline points={`${P(-W, 0, -D)} ${P(-W, H, -D)}`} />
+            <polyline points={`${P(W, 0, -D)} ${P(W, H, -D)}`} />
+            <polyline points={`${P(W, 0, D)} ${P(W, H, D)}`} />
+            <polyline points={`${P(-W, 0, D)} ${P(-W, H, D)}`} />
+            {/* base footprint */}
+            <polygon
+              points={`${P(-W, 0, -D)} ${P(W, 0, -D)} ${P(W, 0, D)} ${P(-W, 0, D)}`}
+              fill="rgba(31,31,35,0.35)"
             />
-          ))}
-
-          {/* loading-dock bay openings along the base */}
-          {Array.from({ length: 4 }).map((_, i) => (
-            <rect
-              key={`dock${i}`}
-              x={120 + i * 150}
-              y="235"
-              width="95"
-              height="105"
-              fill="rgba(14,14,16,0.85)"
-              stroke="#F4F2EE"
-              strokeOpacity="0.6"
+            {/* eave / top plate ring (roof plane, left open) */}
+            <polygon
+              points={roofQuad(H)}
+              fill="rgba(31,31,35,0.25)"
+              strokeOpacity="0.7"
             />
-          ))}
+          </g>
 
-          {/* open roof joists spanning the top (construction lines) */}
-          {Array.from({ length: 16 }).map((_, i) => (
-            <line
-              key={`joist${i}`}
-              x1={i * (760 / 15)}
-              y1="140"
-              x2={i * (760 / 15)}
-              y2="118"
-              stroke="#F4F2EE"
-              strokeOpacity="0.45"
-            />
-          ))}
-          {/* top plate / eave line */}
-          <line x1="0" y1="118" x2="760" y2="118" stroke="#F4F2EE" strokeOpacity="0.55" />
+          {/* ---- structural columns + bay lines (interior) ---- */}
+          <g stroke={LINE} strokeWidth="1" strokeOpacity="0.4">
+            {Array.from({ length: 5 }).map((_, i) => {
+              const x = -W + (i * (2 * W)) / 4;
+              return (
+                <polyline key={`cx${i}`} points={`${P(x, 0, -D)} ${P(x, H, -D)}`} />
+              );
+            })}
+            {Array.from({ length: 3 }).map((_, i) => {
+              const z = -D + (i * (2 * D)) / 2;
+              return (
+                <polyline key={`cz${i}`} points={`${P(W, 0, z)} ${P(W, H, z)}`} />
+              );
+            })}
+          </g>
 
-          {/* roof-plane construction outline (dashed, still open) */}
-          <line
-            x1="0"
-            y1="118"
-            x2="760"
-            y2="118"
-            stroke="#C8262B"
-            strokeOpacity="0.4"
-            strokeDasharray="6 6"
-          />
+          {/* ---- open roof joists spanning the depth (top plane) ---- */}
+          <g stroke={LINE} strokeWidth="0.9" strokeOpacity="0.4">
+            {Array.from({ length: 9 }).map((_, i) => {
+              const x = -W + (i * (2 * W)) / 8;
+              return (
+                <polyline key={`j${i}`} points={`${P(x, H, -D)} ${P(x, H, D)}`} />
+              );
+            })}
+          </g>
 
-          {/* red membrane rolling on across the roof (partial) */}
-          <rect
-            x="0"
-            y="102"
-            width="440"
-            height="16"
-            fill="#C8262B"
-            fillOpacity="0.5"
-            stroke="#C8262B"
-            strokeOpacity="0.9"
-          />
+          {/* ---- red survey diagonals across the open roof ---- */}
+          <g stroke={RED} strokeWidth="1.2" strokeOpacity="0.4" strokeDasharray="6 6">
+            <polyline points={`${P(-W, H, -D)} ${P(W, H, D)}`} />
+            <polyline points={`${P(-W, H, D)} ${P(W, H, D === D ? -D : -D)}`} />
+          </g>
 
-          {/* parapet / edge-metal cap on the sealed portion */}
-          <line x1="0" y1="100" x2="440" y2="100" stroke="#8A8A93" strokeWidth="3" />
+          {/* ---- EXPLODED ROOF-LAYER STACK floating above the roof plane ---- */}
+          {/* 01 steel deck */}
+          <polygon points={layer(H + 1.1)} fill="rgba(58,58,66,0.55)" stroke={LINE} strokeWidth="1.3" strokeOpacity="0.85" />
+          {/* 02 insulation */}
+          <polygon points={layer(H + 2.1)} fill="rgba(110,110,74,0.5)" stroke={LINE} strokeWidth="1.3" strokeOpacity="0.85" />
+          {/* 03 cover board */}
+          <polygon points={layer(H + 3.0)} fill="rgba(140,140,110,0.5)" stroke={LINE} strokeWidth="1.3" strokeOpacity="0.85" />
+          {/* 04 red membrane */}
+          <polygon points={layer(H + 3.9)} fill="rgba(200,38,43,0.55)" stroke={RED} strokeWidth="1.6" strokeOpacity="0.95" />
+          {/* 05 edge metal cap (thin frame above membrane) */}
+          <polygon points={layer(H + 4.5)} fill="none" stroke="#9AA0A6" strokeWidth="2.4" strokeOpacity="0.9" />
         </g>
 
-        {/* layer callouts */}
+        {/* ---- layer callouts with leader lines ---- */}
         <g fontFamily="monospace" fontSize="15" fill="#97979E">
-          <line x1="1000" y1="360" x2="900" y2="378" stroke="rgba(255,255,255,0.25)" />
-          <text x="1008" y="356">04 — EDGE METAL</text>
-          <line x1="1010" y1="408" x2="820" y2="400" stroke="rgba(255,255,255,0.25)" />
-          <text x="1018" y="412" fill="#C8262B">03 — RED MEMBRANE</text>
-          <line x1="1000" y1="452" x2="760" y2="430" stroke="rgba(255,255,255,0.25)" />
-          <text x="1008" y="456">02 — INSULATION</text>
-          <line x1="980" y1="500" x2="700" y2="470" stroke="rgba(255,255,255,0.25)" />
-          <text x="988" y="504">01 — STEEL DECK</text>
+          <line x1="720" y1="150" x2="640" y2="168" stroke="rgba(255,255,255,0.25)" />
+          <text x="728" y="146" fill="#9AA0A6">05 — EDGE METAL</text>
+          <line x1="740" y1="196" x2="650" y2="205" stroke="rgba(255,255,255,0.25)" />
+          <text x="748" y="200" fill={RED}>04 — RED MEMBRANE</text>
+          <line x1="720" y1="242" x2="640" y2="243" stroke="rgba(255,255,255,0.25)" />
+          <text x="728" y="246">03 — COVER BOARD</text>
+          <line x1="720" y1="288" x2="640" y2="281" stroke="rgba(255,255,255,0.25)" />
+          <text x="728" y="292">02 — INSULATION</text>
+          <line x1="720" y1="334" x2="640" y2="319" stroke="rgba(255,255,255,0.25)" />
+          <text x="728" y="338">01 — STEEL DECK</text>
         </g>
       </svg>
     </div>
