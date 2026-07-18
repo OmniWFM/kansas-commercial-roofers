@@ -4,8 +4,8 @@ import { useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
 import SceneFallback from "@/components/SceneFallback";
 
-const PHONE_DISPLAY = "(316) 555-0142";
-const PHONE_TEL = "+13165550142";
+const PHONE_DISPLAY = "833-JRCO-USA";
+const PHONE_TEL = "+18335726872";
 
 /* Persistent scroll-driven roofscape scene: ONE canvas, fixed behind the
    entire page, transforming through six chapters as you scroll. */
