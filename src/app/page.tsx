@@ -2,77 +2,16 @@
 
 import { useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
+import SceneFallback from "@/components/SceneFallback";
 
 const PHONE_DISPLAY = "(316) 555-0142";
 const PHONE_TEL = "+13165550142";
 
-/* Designed fallback shown while the 3D scene loads, when WebGL is
-   unavailable, and for prefers-reduced-motion users. An abstract
-   aerial roofscape rendered in SVG, same palette as the live scene. */
-function HeroFallback() {
-  const cells = Array.from({ length: 11 * 6 });
-  return (
-    <div className="absolute inset-0" aria-hidden="true">
-      <div
-        className="absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(120% 90% at 50% 120%, rgba(200,38,43,0.14), transparent 55%)",
-        }}
-      />
-      <svg
-        viewBox="0 0 1200 700"
-        className="h-full w-full opacity-70"
-        preserveAspectRatio="xMidYMid slice"
-        fill="none"
-      >
-        <g transform="translate(160 120) scale(1 0.55) rotate(-18 440 260)">
-          {cells.map((_, i) => {
-            const col = i % 11;
-            const row = Math.floor(i / 11);
-            const seed = Math.abs(Math.sin(col * 12.9 + row * 4.1)) ;
-            const s = 46 + seed * 34;
-            const x = col * 80;
-            const y = row * 80;
-            return (
-              <rect
-                key={i}
-                x={x}
-                y={y}
-                width={s}
-                height={s}
-                rx={3}
-                fill="#1F1F23"
-                stroke="rgba(255,255,255,0.06)"
-                strokeWidth="1"
-              />
-            );
-          })}
-        </g>
-        <line
-          x1="600"
-          y1="0"
-          x2="600"
-          y2="700"
-          stroke="#C8262B"
-          strokeWidth="2"
-        />
-        <rect x="560" y="0" width="80" height="700" fill="url(#kcrScan)" />
-        <defs>
-          <linearGradient id="kcrScan" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stopColor="#C8262B" stopOpacity="0" />
-            <stop offset="0.5" stopColor="#C8262B" stopOpacity="0.28" />
-            <stop offset="1" stopColor="#C8262B" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-      </svg>
-    </div>
-  );
-}
-
-const RoofscapeHero = dynamic(() => import("@/components/RoofscapeHero"), {
+/* Persistent scroll-driven roofscape scene: ONE canvas, fixed behind the
+   entire page, transforming through six chapters as you scroll. */
+const ScrollScene = dynamic(() => import("@/components/ScrollScene"), {
   ssr: false,
-  loading: () => <HeroFallback />,
+  loading: () => <SceneFallback />,
 });
 
 const NAV = [
@@ -172,17 +111,11 @@ function Wordmark() {
   );
 }
 
-/* Signature element: a technical cross-section of a commercial roof assembly,
+/* Secondary signature: technical cross-section of a commercial roof assembly,
    drawn as a fine engineered line diagram that animates on load. */
 function RoofSection() {
   return (
-    <svg
-      viewBox="0 0 1200 260"
-      className="w-full h-auto"
-      fill="none"
-      aria-hidden="true"
-      preserveAspectRatio="none"
-    >
+    <svg viewBox="0 0 1200 260" className="w-full h-auto" fill="none" aria-hidden="true" preserveAspectRatio="none">
       <defs>
         <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
           <stop offset="0" stopColor="#C8262B" stopOpacity="0" />
@@ -190,9 +123,7 @@ function RoofSection() {
           <stop offset="1" stopColor="#C8262B" stopOpacity="0" />
         </linearGradient>
       </defs>
-      {/* deck */}
       <path className="draw-line" style={{ ["--len" as string]: 1220 }} d="M0 210 H1200" stroke="rgba(255,255,255,0.14)" strokeWidth="1" />
-      {/* insulation zig */}
       <path
         className="draw-line"
         style={{ ["--len" as string]: 1400 }}
@@ -200,19 +131,9 @@ function RoofSection() {
         stroke="rgba(255,255,255,0.18)"
         strokeWidth="1"
       />
-      {/* membrane (accent) */}
       <path className="draw-line" style={{ ["--len" as string]: 1220 }} d="M0 108 H1200" stroke="url(#fade)" strokeWidth="1.5" />
-      {/* fastener ticks */}
       {Array.from({ length: 13 }).map((_, i) => (
-        <line
-          key={i}
-          x1={40 + i * 96}
-          y1={108}
-          x2={40 + i * 96}
-          y2={210}
-          stroke="rgba(255,255,255,0.08)"
-          strokeWidth="1"
-        />
+        <line key={i} x1={40 + i * 96} y1={108} x2={40 + i * 96} y2={210} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
       ))}
     </svg>
   );
@@ -222,300 +143,277 @@ export default function Home() {
   const ref = useReveal();
 
   return (
-    <main id="top" ref={ref} className="relative min-h-screen bg-base text-ink">
-      {/* NAV */}
-      <header className="fixed inset-x-0 top-0 z-50 border-b hairline bg-base/80 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-shell items-center justify-between px-5 sm:px-8">
-          <Wordmark />
-          <nav className="hidden items-center gap-8 md:flex">
-            {NAV.map((n) => (
-              <a
-                key={n.href}
-                href={n.href}
-                className="text-[13px] text-muted transition-colors hover:text-ink"
-              >
-                {n.label}
-              </a>
-            ))}
-          </nav>
-          <div className="flex items-center gap-4">
-            <a href={`tel:${PHONE_TEL}`} className="hidden text-[13px] text-ink transition-colors hover:text-accent sm:block">
-              {PHONE_DISPLAY}
-            </a>
-            <a
-              href="#contact"
-              className="rounded-full bg-accent px-4 py-2 text-[13px] font-500 text-ink transition-colors hover:bg-accentdark"
-            >
-              Request Service
-            </a>
-          </div>
-        </div>
-      </header>
+    <div id="top" ref={ref} className="relative bg-base text-ink">
+      {/* PERSISTENT 3D LAYER — fixed behind the entire page, scroll-driven */}
+      <div className="pointer-events-none fixed inset-0 z-0" aria-hidden="true">
+        <ScrollScene />
+      </div>
 
-      {/* HERO — 3D aerial roofscape behind the copy */}
-      <section className="relative overflow-hidden px-5 pt-40 pb-24 sm:px-8 sm:pt-48 sm:pb-28">
-        {/* 3D scene layer */}
-        <div className="pointer-events-none absolute inset-0" aria-hidden="true">
-          <div className="absolute inset-0">
-            <RoofscapeHero />
-          </div>
-          {/* readability scrim: darken the bottom-left where the copy sits */}
-          <div
-            className="absolute inset-0"
-            style={{
-              background:
-                "linear-gradient(90deg, rgba(14,14,16,0.92) 0%, rgba(14,14,16,0.72) 42%, rgba(14,14,16,0.25) 100%)",
-            }}
-          />
-          <div
-            className="absolute inset-x-0 bottom-0 h-40"
-            style={{ background: "linear-gradient(to top, #0E0E10, transparent)" }}
-          />
-        </div>
-
-        <div className="relative mx-auto max-w-shell">
-          <p className="eyebrow rise" style={{ animationDelay: "0.05s" }}>
-            Industrial &amp; Commercial Roofing &middot; Kansas
-          </p>
-          <h1 className="mt-6 max-w-4xl font-display text-[2.6rem] font-600 leading-[1.02] tracking-[-0.02em] sm:text-6xl lg:text-7xl">
-            <span className="rise block" style={{ animationDelay: "0.12s" }}>Relentless in our</span>
-            <span className="rise block" style={{ animationDelay: "0.22s" }}>pursuit to build the</span>
-            <span className="rise block" style={{ animationDelay: "0.32s" }}>
-              best <span className="text-accent">tomorrow.</span>
-            </span>
-          </h1>
-          <p
-            className="rise mt-8 max-w-2xl text-lg leading-relaxed text-muted"
-            style={{ animationDelay: "0.42s" }}
-          >
-            Kansas Commercial Roofers is a Kansas-based commercial roofing team
-            built on a culture of care for our people and our customers. From
-            complex low-slope installs to emergency repairs, no job is outside
-            our wheelhouse &mdash; we bring experience, precision, and a commitment
-            to protecting your building for the long run.
-          </p>
-          <div className="rise mt-10 flex flex-wrap items-center gap-4" style={{ animationDelay: "0.52s" }}>
-            <a
-              href="#contact"
-              className="rounded-full bg-accent px-6 py-3 text-sm font-500 text-ink transition-colors hover:bg-accentdark"
-            >
-              Get a Free Storm Report
-            </a>
-            <a
-              href="#systems"
-              className="rounded-full border hairline px-6 py-3 text-sm font-500 text-ink transition-colors hover:border-ink/40"
-            >
-              Explore Our Systems
-            </a>
-          </div>
-
-          {/* Signature roof cross-section */}
-          <div className="mt-16">
-            <div className="mb-3 flex items-center justify-between text-[11px] uppercase tracking-[0.18em] text-muted">
-              <span>Deck</span>
-              <span>Insulation</span>
-              <span className="text-accent">Membrane</span>
-            </div>
-            <RoofSection />
-            <p className="mt-3 text-[11px] uppercase tracking-[0.18em] text-muted">
-              From deck to membrane &mdash; engineered as one system
-            </p>
-          </div>
-        </div>
-      </section>
-
-      {/* STATS */}
-      <section className="border-y hairline px-5 sm:px-8">
-        <div className="mx-auto grid max-w-shell grid-cols-1 divide-y divide-white/10 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
-          {STATS.map((s) => (
-            <div key={s.label} className="reveal py-10 sm:px-8 sm:first:pl-0">
-              <div className="font-display text-4xl font-600 tracking-tight sm:text-5xl">
-                {s.value}
-                <span className="text-accent">{s.suffix}</span>
-              </div>
-              <p className="mt-3 text-sm text-muted">{s.label}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* SYSTEMS */}
-      <section id="systems" className="px-5 py-24 sm:px-8 sm:py-32">
-        <div className="mx-auto max-w-shell">
-          <div className="reveal max-w-2xl">
-            <p className="eyebrow">Roofing Systems</p>
-            <h2 className="mt-5 font-display text-3xl font-600 tracking-tight sm:text-4xl">
-              Certified in every commercial roof system worth installing.
-            </h2>
-            <p className="mt-5 text-muted">
-              With decades of combined experience across market sectors, our team
-              is prepared to deliver the best value and solution &mdash; regardless of
-              the project's complexity.
-            </p>
-          </div>
-          <div className="mt-14 grid grid-cols-1 gap-px overflow-hidden rounded-lg border hairline bg-white/5 sm:grid-cols-2 lg:grid-cols-4">
-            {SYSTEMS.map((sys, i) => (
-              <div
-                key={sys.name}
-                className="reveal group bg-base p-6 transition-colors hover:bg-surface"
-                style={{ transitionDelay: `${(i % 4) * 40}ms` }}
-              >
-                <div className="flex items-baseline justify-between">
-                  <span className="font-display text-xl font-600">{sys.name}</span>
-                  <span className="text-[11px] tabular-nums text-muted">
-                    {String(i + 1).padStart(2, "0")}
-                  </span>
-                </div>
-                <div className="mt-4 h-px w-8 bg-accent transition-all duration-300 group-hover:w-14" />
-                <p className="mt-4 text-sm leading-relaxed text-muted">{sys.note}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* VERTICALS */}
-      <section id="verticals" className="border-t hairline px-5 py-24 sm:px-8 sm:py-32">
-        <div className="mx-auto grid max-w-shell gap-14 lg:grid-cols-[0.9fr_1.1fr] lg:gap-20">
-          <div className="reveal">
-            <p className="eyebrow">Client Verticals</p>
-            <h2 className="mt-5 font-display text-3xl font-600 tracking-tight sm:text-4xl">
-              Built for the buildings Kansas runs on.
-            </h2>
-            <p className="mt-5 text-muted">
-              From warehouses and food processing plants to schools, hospitals,
-              and federal facilities &mdash; we've roofed the full range of commercial
-              and industrial property across the state.
-            </p>
-          </div>
-          <div className="reveal flex flex-wrap gap-2.5 lg:pt-2">
-            {VERTICALS.map((v) => (
-              <span
-                key={v}
-                className="rounded-full border hairline px-4 py-2 text-sm text-muted transition-colors hover:border-accent/50 hover:text-ink"
-              >
-                {v}
-              </span>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* APPROACH */}
-      <section id="approach" className="border-t hairline px-5 sm:px-8">
-        <div className="mx-auto max-w-shell">
-          {APPROACH.map((a, i) => (
-            <div
-              key={a.kicker}
-              className="reveal grid gap-6 border-b hairline py-16 last:border-b-0 sm:py-20 lg:grid-cols-[0.5fr_1fr] lg:gap-16"
-            >
-              <div className="flex items-start gap-4">
-                <span className="font-display text-sm tabular-nums text-accent">
-                  {String(i + 1).padStart(2, "0")}
-                </span>
-                <p className="eyebrow pt-0.5">{a.kicker}</p>
-              </div>
-              <div>
-                <h3 className="font-display text-2xl font-600 tracking-tight sm:text-3xl">
-                  {a.title}
-                </h3>
-                <p className="mt-4 max-w-2xl text-lg leading-relaxed text-muted">
-                  {a.body}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* CERTS */}
-      <section id="coverage" className="border-t hairline px-5 py-16 sm:px-8">
-        <div className="mx-auto max-w-shell">
-          <p className="reveal eyebrow text-center">Trusted to Protect</p>
-          <div className="reveal mt-8 flex flex-wrap items-center justify-center gap-x-10 gap-y-6">
-            {CERTS.map((c) => (
-              <span
-                key={c}
-                className="font-display text-lg font-500 tracking-tight text-muted/70 grayscale transition-colors hover:text-ink"
-              >
-                {c}
-              </span>
-            ))}
-          </div>
-          <p className="reveal mt-6 text-center text-sm text-muted">
-            Manufacturer-certified installations &amp; warranty-backed systems.
-          </p>
-        </div>
-      </section>
-
-      {/* CTA */}
-      <section id="contact" className="px-5 py-24 sm:px-8 sm:py-32">
-        <div className="reveal relative mx-auto max-w-shell overflow-hidden rounded-2xl border hairline bg-surface px-8 py-16 sm:px-16 sm:py-20">
-          <div
-            className="pointer-events-none absolute inset-0 opacity-80"
-            style={{
-              background:
-                "radial-gradient(90% 140% at 90% 10%, rgba(200,38,43,0.16), transparent 55%)",
-            }}
-            aria-hidden="true"
-          />
-          <div className="relative max-w-2xl">
-            <p className="eyebrow">Free Storm Report &amp; Inspection</p>
-            <h2 className="mt-5 font-display text-3xl font-600 leading-tight tracking-tight sm:text-5xl">
-              Get your free storm report &amp; inspection.
-            </h2>
-            <p className="mt-5 text-lg leading-relaxed text-muted">
-              Join the property owners and facility managers who trust Kansas
-              Commercial Roofers to protect their buildings. Whether you're
-              starting a new project or maintaining an existing structure, our
-              team is ready to help &mdash; with precision and professionalism.
-            </p>
-            <div className="mt-9 flex flex-wrap items-center gap-4">
-              <a
-                href={`tel:${PHONE_TEL}`}
-                className="rounded-full bg-accent px-6 py-3 text-sm font-500 text-ink transition-colors hover:bg-accentdark"
-              >
-                Call {PHONE_DISPLAY}
-              </a>
-              <a
-                href={`tel:${PHONE_TEL}`}
-                className="rounded-full border hairline px-6 py-3 text-sm font-500 text-ink transition-colors hover:border-ink/40"
-              >
-                Schedule an Inspection
-              </a>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* FOOTER */}
-      <footer className="border-t hairline px-5 py-14 sm:px-8">
-        <div className="mx-auto flex max-w-shell flex-col gap-8 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-col gap-4">
+      {/* CONTENT — scrolls natively above the canvas */}
+      <main className="relative z-10 min-h-screen">
+        {/* NAV */}
+        <header className="fixed inset-x-0 top-0 z-50 border-b hairline bg-base/80 backdrop-blur-md">
+          <div className="mx-auto flex h-16 max-w-shell items-center justify-between px-5 sm:px-8">
             <Wordmark />
-            <p className="max-w-xs text-sm text-muted">
-              Industrial &amp; commercial roofing across Kansas. Relentless in our
-              pursuit to build the best tomorrow.
-            </p>
-          </div>
-          <div className="flex flex-col gap-3 text-sm sm:items-end">
-            <a href={`tel:${PHONE_TEL}`} className="text-ink transition-colors hover:text-accent">
-              {PHONE_DISPLAY}
-            </a>
-            <span className="text-muted">Serving all of Kansas</span>
-            <nav className="flex flex-wrap gap-4 text-muted sm:justify-end">
+            <nav className="hidden items-center gap-8 md:flex">
               {NAV.map((n) => (
-                <a key={n.href} href={n.href} className="transition-colors hover:text-ink">
+                <a key={n.href} href={n.href} className="text-[13px] text-muted transition-colors hover:text-ink">
                   {n.label}
                 </a>
               ))}
             </nav>
+            <div className="flex items-center gap-4">
+              <a href={`tel:${PHONE_TEL}`} className="hidden text-[13px] text-ink transition-colors hover:text-accent sm:block">
+                {PHONE_DISPLAY}
+              </a>
+              <a href="#contact" className="rounded-full bg-accent px-4 py-2 text-[13px] font-500 text-ink transition-colors hover:bg-accentdark">
+                Request Service
+              </a>
+            </div>
           </div>
-        </div>
-        <div className="mx-auto mt-10 max-w-shell border-t hairline pt-6 text-xs text-muted">
-          &copy; {new Date().getFullYear()} Kansas Commercial Roofers. All rights reserved.
-        </div>
-      </footer>
-    </main>
+        </header>
+
+        {/* HERO — copy sits over the live roofscape; scrim keeps it legible */}
+        <section className="relative min-h-[100svh] overflow-hidden px-5 pt-40 pb-24 sm:px-8 sm:pt-48 sm:pb-28">
+          <div
+            className="pointer-events-none absolute inset-0"
+            aria-hidden="true"
+            style={{
+              background:
+                "linear-gradient(90deg, rgba(14,14,16,0.92) 0%, rgba(14,14,16,0.72) 42%, rgba(14,14,16,0.15) 100%)",
+            }}
+          />
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40" aria-hidden="true" style={{ background: "linear-gradient(to top, #0E0E10, transparent)" }} />
+
+          <div className="relative mx-auto max-w-shell">
+            <p className="eyebrow rise" style={{ animationDelay: "0.05s" }}>
+              Industrial &amp; Commercial Roofing &middot; Kansas
+            </p>
+            <h1 className="mt-6 max-w-4xl font-display text-[2.6rem] font-600 leading-[1.02] tracking-[-0.02em] sm:text-6xl lg:text-7xl">
+              <span className="rise block" style={{ animationDelay: "0.12s" }}>Relentless in our</span>
+              <span className="rise block" style={{ animationDelay: "0.22s" }}>pursuit to build the</span>
+              <span className="rise block" style={{ animationDelay: "0.32s" }}>
+                best <span className="text-accent">tomorrow.</span>
+              </span>
+            </h1>
+            <p className="rise mt-8 max-w-2xl text-lg leading-relaxed text-muted" style={{ animationDelay: "0.42s" }}>
+              Kansas Commercial Roofers is a Kansas-based commercial roofing team
+              built on a culture of care for our people and our customers. From
+              complex low-slope installs to emergency repairs, no job is outside
+              our wheelhouse &mdash; we bring experience, precision, and a commitment
+              to protecting your building for the long run.
+            </p>
+            <div className="rise mt-10 flex flex-wrap items-center gap-4" style={{ animationDelay: "0.52s" }}>
+              <a href="#contact" className="rounded-full bg-accent px-6 py-3 text-sm font-500 text-ink transition-colors hover:bg-accentdark">
+                Get a Free Storm Report
+              </a>
+              <a href="#systems" className="rounded-full border hairline px-6 py-3 text-sm font-500 text-ink transition-colors hover:border-ink/40">
+                Explore Our Systems
+              </a>
+            </div>
+
+            {/* Secondary signature: roof cross-section */}
+            <div className="mt-16 max-w-4xl rounded-lg border hairline bg-base/40 p-5 backdrop-blur-sm">
+              <div className="mb-3 flex items-center justify-between text-[11px] uppercase tracking-[0.18em] text-muted">
+                <span>Deck</span>
+                <span>Insulation</span>
+                <span className="text-accent">Membrane</span>
+              </div>
+              <RoofSection />
+              <p className="mt-3 text-[11px] uppercase tracking-[0.18em] text-muted">
+                From deck to membrane &mdash; engineered as one system
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* STATS */}
+        <section className="border-y hairline bg-base/70 px-5 backdrop-blur-sm sm:px-8">
+          <div className="mx-auto grid max-w-shell grid-cols-1 divide-y divide-white/10 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+            {STATS.map((s) => (
+              <div key={s.label} className="reveal py-10 sm:px-8 sm:first:pl-0">
+                <div className="font-display text-4xl font-600 tracking-tight sm:text-5xl">
+                  {s.value}
+                  <span className="text-accent">{s.suffix}</span>
+                </div>
+                <p className="mt-3 text-sm text-muted">{s.label}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* SYSTEMS */}
+        <section id="systems" className="px-5 py-24 sm:px-8 sm:py-32">
+          <div className="mx-auto max-w-shell">
+            <div className="reveal max-w-2xl rounded-lg bg-base/60 p-6 backdrop-blur-sm">
+              <p className="eyebrow">Roofing Systems</p>
+              <h2 className="mt-5 font-display text-3xl font-600 tracking-tight sm:text-4xl">
+                Certified in every commercial roof system worth installing.
+              </h2>
+              <p className="mt-5 text-muted">
+                With decades of combined experience across market sectors, our team
+                is prepared to deliver the best value and solution &mdash; regardless of
+                the project's complexity.
+              </p>
+            </div>
+            <div className="mt-14 grid grid-cols-1 gap-px overflow-hidden rounded-lg border hairline bg-white/5 sm:grid-cols-2 lg:grid-cols-4">
+              {SYSTEMS.map((sys, i) => (
+                <div
+                  key={sys.name}
+                  className="reveal group bg-base/85 p-6 backdrop-blur-sm transition-colors hover:bg-surface"
+                  style={{ transitionDelay: `${(i % 4) * 40}ms` }}
+                >
+                  <div className="flex items-baseline justify-between">
+                    <span className="font-display text-xl font-600">{sys.name}</span>
+                    <span className="text-[11px] tabular-nums text-muted">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                  </div>
+                  <div className="mt-4 h-px w-8 bg-accent transition-all duration-300 group-hover:w-14" />
+                  <p className="mt-4 text-sm leading-relaxed text-muted">{sys.note}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* VERTICALS */}
+        <section id="verticals" className="border-t hairline px-5 py-24 sm:px-8 sm:py-32">
+          <div className="mx-auto grid max-w-shell gap-14 lg:grid-cols-[0.9fr_1.1fr] lg:gap-20">
+            <div className="reveal rounded-lg bg-base/60 p-6 backdrop-blur-sm">
+              <p className="eyebrow">Client Verticals</p>
+              <h2 className="mt-5 font-display text-3xl font-600 tracking-tight sm:text-4xl">
+                Built for the buildings Kansas runs on.
+              </h2>
+              <p className="mt-5 text-muted">
+                From warehouses and food processing plants to schools, hospitals,
+                and federal facilities &mdash; we've roofed the full range of commercial
+                and industrial property across the state.
+              </p>
+            </div>
+            <div className="reveal flex flex-wrap gap-2.5 lg:pt-2">
+              {VERTICALS.map((v) => (
+                <span
+                  key={v}
+                  className="rounded-full border hairline bg-base/50 px-4 py-2 text-sm text-muted backdrop-blur-sm transition-colors hover:border-accent/50 hover:text-ink"
+                >
+                  {v}
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* APPROACH */}
+        <section id="approach" className="border-t hairline px-5 sm:px-8">
+          <div className="mx-auto max-w-shell">
+            {APPROACH.map((a, i) => (
+              <div
+                key={a.kicker}
+                className="reveal grid gap-6 border-b hairline py-16 last:border-b-0 sm:py-20 lg:grid-cols-[0.5fr_1fr] lg:gap-16"
+              >
+                <div className="flex items-start gap-4">
+                  <span className="font-display text-sm tabular-nums text-accent">
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                  <p className="eyebrow pt-0.5">{a.kicker}</p>
+                </div>
+                <div className="rounded-lg bg-base/50 p-1 backdrop-blur-sm lg:bg-transparent lg:p-0 lg:backdrop-blur-none">
+                  <h3 className="font-display text-2xl font-600 tracking-tight sm:text-3xl">
+                    {a.title}
+                  </h3>
+                  <p className="mt-4 max-w-2xl text-lg leading-relaxed text-muted">
+                    {a.body}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* CERTS / COVERAGE */}
+        <section id="coverage" className="border-t hairline px-5 py-16 sm:px-8">
+          <div className="mx-auto max-w-shell rounded-lg bg-base/50 py-10 backdrop-blur-sm">
+            <p className="reveal eyebrow text-center">Trusted to Protect</p>
+            <div className="reveal mt-8 flex flex-wrap items-center justify-center gap-x-10 gap-y-6">
+              {CERTS.map((c) => (
+                <span
+                  key={c}
+                  className="font-display text-lg font-500 tracking-tight text-muted/70 grayscale transition-colors hover:text-ink"
+                >
+                  {c}
+                </span>
+              ))}
+            </div>
+            <p className="reveal mt-6 text-center text-sm text-muted">
+              Manufacturer-certified installations &amp; warranty-backed systems.
+            </p>
+          </div>
+        </section>
+
+        {/* CTA */}
+        <section id="contact" className="px-5 py-24 sm:px-8 sm:py-32">
+          <div className="reveal relative mx-auto max-w-shell overflow-hidden rounded-2xl border hairline bg-surface/85 px-8 py-16 backdrop-blur-md sm:px-16 sm:py-20">
+            <div
+              className="pointer-events-none absolute inset-0 opacity-80"
+              style={{
+                background:
+                  "radial-gradient(90% 140% at 90% 10%, rgba(200,38,43,0.16), transparent 55%)",
+              }}
+              aria-hidden="true"
+            />
+            <div className="relative max-w-2xl">
+              <p className="eyebrow">Free Storm Report &amp; Inspection</p>
+              <h2 className="mt-5 font-display text-3xl font-600 leading-tight tracking-tight sm:text-5xl">
+                Get your free storm report &amp; inspection.
+              </h2>
+              <p className="mt-5 text-lg leading-relaxed text-muted">
+                Join the property owners and facility managers who trust Kansas
+                Commercial Roofers to protect their buildings. Whether you're
+                starting a new project or maintaining an existing structure, our
+                team is ready to help &mdash; with precision and professionalism.
+              </p>
+              <div className="mt-9 flex flex-wrap items-center gap-4">
+                <a href={`tel:${PHONE_TEL}`} className="rounded-full bg-accent px-6 py-3 text-sm font-500 text-ink transition-colors hover:bg-accentdark">
+                  Call {PHONE_DISPLAY}
+                </a>
+                <a href={`tel:${PHONE_TEL}`} className="rounded-full border hairline px-6 py-3 text-sm font-500 text-ink transition-colors hover:border-ink/40">
+                  Schedule an Inspection
+                </a>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* FOOTER */}
+        <footer className="border-t hairline bg-base/80 px-5 py-14 backdrop-blur-sm sm:px-8">
+          <div className="mx-auto flex max-w-shell flex-col gap-8 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-4">
+              <Wordmark />
+              <p className="max-w-xs text-sm text-muted">
+                Industrial &amp; commercial roofing across Kansas. Relentless in our
+                pursuit to build the best tomorrow.
+              </p>
+            </div>
+            <div className="flex flex-col gap-3 text-sm sm:items-end">
+              <a href={`tel:${PHONE_TEL}`} className="text-ink transition-colors hover:text-accent">
+                {PHONE_DISPLAY}
+              </a>
+              <span className="text-muted">Serving all of Kansas</span>
+              <nav className="flex flex-wrap gap-4 text-muted sm:justify-end">
+                {NAV.map((n) => (
+                  <a key={n.href} href={n.href} className="transition-colors hover:text-ink">
+                    {n.label}
+                  </a>
+                ))}
+              </nav>
+            </div>
+          </div>
+          <div className="mx-auto mt-10 max-w-shell border-t hairline pt-6 text-xs text-muted">
+            &copy; {new Date().getFullYear()} Kansas Commercial Roofers. All rights reserved.
+          </div>
+        </footer>
+      </main>
+    </div>
   );
 }
