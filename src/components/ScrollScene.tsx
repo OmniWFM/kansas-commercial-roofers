@@ -5,162 +5,181 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Edges } from "@react-three/drei";
 import * as THREE from "three";
 
-/* ------------------------------------------------------------------------
- * Persistent scroll-driven "Blueprint Build" scene.
+/* ---------------------------------------------------------------------------
+ * Persistent scroll-driven "Isometric Cutaway" scene.
  * ONE canvas fixed behind the whole page. Native scroll is the scrubber.
  *
- * A LARGE low-slope commercial building is drawn as a 3D technical sketch:
- * a real structural bay grid (steel columns + edge beams), open roof joists
- * spanning the bays, loading-dock bays, a parapet, and rooftop units —
- * so it reads as an actual commercial building blueprint, not a box.
+ * A commercial building is drawn as an ISOMETRIC 3D technical cutaway —
+ * translucent panel fills + glowing white edge lines (blueprint look). One
+ * corner of the roof is peeled back so the FULL roof assembly is exposed as a
+ * stack of separated, labeled layers:
+ *   STEEL DECK -> INSULATION -> COVER BOARD -> RED MEMBRANE -> EDGE METAL.
  *
- * It opens as bare steel structure with an OPEN top (no roof). As you scroll
- * the roof assembles one layer at a time:
- *   deck panels -> insulation boards -> red membrane -> perimeter edge metal.
+ * The framing stays isometric the whole time (fixed camera angle). Scroll does
+ * NOT orbit — it zooms/pans and drives an EXPLODED-VIEW assembly: the layers
+ * begin lifted apart in the hero, then settle down onto the deck one at a time
+ * as you move through the sections, ending as a finished, sealed roof.
  *
  * Scroll progress lives in a mutable ref (never state). Six chapters, one per
- * page section, each defining a camera target + how far the build has gone.
- * useFrame smoothsteps between chapters and damps toward targets.
- * ---------------------------------------------------------------------- */
+ * section. useFrame smoothsteps between chapters and damps toward targets.
+ * ------------------------------------------------------------------------- */
 
 const BG = "#0E0E10";
-const ACCENT = new THREE.Color("#C8262B");
+const ACCENT = new THREE.Color("#C8262B"); // red membrane
 const LINE = "#F4F2EE"; // blueprint edge line
-const STEEL = new THREE.Color("#3A3A42"); // deck panels
-const INSUL = new THREE.Color("#6E6E4A"); // insulation boards (muted)
-const METAL = new THREE.Color("#8A8A93"); // edge metal
+const STEEL = new THREE.Color("#3A3A42"); // steel deck
+const INSUL = new THREE.Color("#6E6E4A"); // polyiso insulation (muted)
+const COVER = new THREE.Color("#8C8C6E"); // cover board
+const METAL = new THREE.Color("#9AA0A6"); // edge metal / parapet
 
-// Building footprint (world units) — LONG and low, like a real commercial box.
-const BW = 20; // width  (x)  long axis
-const BD = 9; // depth  (z)
-const BH = 3.0; // wall / eave height (y)
+// Building footprint (world units) — long, low commercial box.
+const BW = 16; // width  (x) long axis
+const BD = 10; // depth  (z)
+const BH = 3.2; // wall height (y)
 const ROOF_Y = BH; // top of walls = roof plane
 
 // Structural bay grid.
-const BAYS_X = 6; // bays along the long axis
-const BAYS_Z = 3; // bays across the depth
+const BAYS_X = 5;
+const BAYS_Z = 3;
 
-// Roof joists span the short (depth) direction, spaced along the length.
-const JOISTS = 15;
+// Roof joists span the depth, spaced along the length.
+const JOISTS = 12;
 
-// Roof layer stacking heights (thin), sitting just above the eave.
-const DECK_Y = ROOF_Y + 0.08;
-const INSUL_Y = ROOF_Y + 0.2;
-const MEMB_Y = ROOF_Y + 0.32;
-const EDGE_Y = ROOF_Y + 0.26;
+// The roof-layer stack sits at the roof plane. Each layer has a "seated"
+// height; in the exploded state they lift by these extra offsets.
+const T_DECK = 0.1;
+const T_INSUL = 0.16;
+const T_COVER = 0.08;
+const T_MEMB = 0.05;
 
-// Deck / insulation grid resolution.
-const DECK_COLS = 12; // long thin planks running across the depth, along length
-const INSUL_COLS = 10;
-const INSUL_ROWS = 4;
+const Y_DECK = ROOF_Y + 0.12;
+const Y_INSUL = Y_DECK + T_DECK / 2 + T_INSUL / 2;
+const Y_COVER = Y_INSUL + T_INSUL / 2 + T_COVER / 2;
+const Y_MEMB = Y_COVER + T_COVER / 2 + T_MEMB / 2;
+
+// Exploded lift amounts (how high each layer floats before it settles).
+const EX_DECK = 1.6;
+const EX_INSUL = 3.0;
+const EX_COVER = 4.2;
+const EX_MEMB = 5.6;
+
+// The cutaway: the roof layers only cover this fraction of the footprint on
+// the +x / +z corner is peeled OPEN so you can see down into the structure.
+const CUT = 0.62; // covered fraction of the roof (rest is the open cutaway)
+
+// Isometric camera angle. We keep this fixed and only move distance/pan.
+const ISO = new THREE.Vector3(1, 0.82, 1).normalize();
 
 type ChapterState = {
-  camPos: [number, number, number];
-  camTarget: [number, number, number];
-  // build phase 0..1 for each roof layer (drives assemble + fade-in)
+  dist: number; // camera distance along the iso vector
+  panX: number; // look-target x pan
+  panY: number; // look-target y pan
+  // per-layer settle 0..1 (0 = fully exploded/hidden, 1 = seated)
   deck: number;
   insul: number;
+  cover: number;
   memb: number;
   edge: number;
-  lineDraw: number; // 0..1 blueprint construction-line intensity (fades as built)
+  lineDraw: number; // blueprint construction-line intensity (fades as built)
   glow: number; // warm red glow behind finished roof
 };
 
-// Chapter map — order matches page sections:
+// Chapter map — order matches the page sections:
 // 0 HERO, 1 SYSTEMS, 2 VERTICALS, 3 APPROACH, 4 COVERAGE, 5 CONTACT
 const CHAPTERS: ChapterState[] = [
   {
-    // HERO — open steel frame, no roof. Wide establishing angle down the long
-    // elevation; blueprint construction lines drawing in.
-    camPos: [17, 7.5, 18],
-    camTarget: [0, 1.8, 0],
+    // HERO — wide isometric establishing shot. Full layer stack floats above
+    // the open structure, exploded and fanned out; construction lines drawing.
+    dist: 30,
+    panX: 0,
+    panY: 2.4,
     deck: 0,
     insul: 0,
+    cover: 0,
     memb: 0,
     edge: 0,
     lineDraw: 1,
     glow: 0,
   },
   {
-    // SYSTEMS — descend to a top-down oblique over the roof; steel DECK planks
-    // drop across the joists.
-    camPos: [8, 12, 15],
-    camTarget: [0, 2.6, 0],
+    // SYSTEMS — push in toward the cutaway corner; STEEL DECK descends and
+    // seats onto the joists first.
+    dist: 22,
+    panX: 1.2,
+    panY: 2.0,
     deck: 1,
     insul: 0,
+    cover: 0,
     memb: 0,
     edge: 0,
-    lineDraw: 0.85,
+    lineDraw: 0.8,
     glow: 0,
   },
   {
-    // VERTICALS — pull back + rotate to the far corner; INSULATION boards tile
-    // in over the deck.
-    camPos: [-16, 9, 15],
-    camTarget: [0, 2.5, 0],
+    // VERTICALS — hold the iso cutaway; INSULATION boards, then COVER BOARD
+    // settle down onto the deck.
+    dist: 21,
+    panX: 1.0,
+    panY: 2.2,
     deck: 1,
     insul: 1,
+    cover: 1,
     memb: 0,
     edge: 0,
-    lineDraw: 0.6,
-    glow: 0,
+    lineDraw: 0.55,
+    glow: 0.1,
   },
   {
-    // APPROACH — low tracking dolly along the long roof edge; RED MEMBRANE
-    // unrolls across the whole roof.
-    camPos: [14, 4.2, 9],
-    camTarget: [-1, 2.9, -0.5],
+    // APPROACH — the RED MEMBRANE lowers and seals across the assembly. The
+    // accent moment.
+    dist: 20,
+    panX: 0.6,
+    panY: 2.4,
     deck: 1,
     insul: 1,
+    cover: 1,
     memb: 1,
     edge: 0,
     lineDraw: 0.35,
-    glow: 0.5,
+    glow: 0.55,
   },
   {
-    // COVERAGE — lift to the widest establishing shot; perimeter EDGE METAL /
-    // parapet caps snap on and seal the building.
-    camPos: [0, 15, 22],
-    camTarget: [0, 1.8, 0],
+    // COVERAGE — pull back to the widest iso; perimeter EDGE METAL / parapet
+    // caps snap on and the building reads sealed and complete.
+    dist: 30,
+    panX: 0,
+    panY: 2.2,
     deck: 1,
     insul: 1,
+    cover: 1,
     memb: 1,
     edge: 1,
     lineDraw: 0.12,
     glow: 0.6,
   },
   {
-    // CONTACT — calm slow framing; finished building, warm red glow from the
-    // sealed roof.
-    camPos: [13, 6, 16],
-    camTarget: [0, 2.0, 0],
+    // CONTACT — calm framing on the finished isometric building, warm red glow
+    // rising off the sealed roof.
+    dist: 24,
+    panX: 0.2,
+    panY: 2.2,
     deck: 1,
     insul: 1,
+    cover: 1,
     memb: 1,
     edge: 1,
     lineDraw: 0,
-    glow: 0.85,
+    glow: 0.9,
   },
 ];
 
-function lerp3(
-  a: [number, number, number],
-  b: [number, number, number],
-  t: number
-): [number, number, number] {
-  return [
-    a[0] + (b[0] - a[0]) * t,
-    a[1] + (b[1] - a[1]) * t,
-    a[2] + (b[2] - a[2]) * t,
-  ];
-}
-
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 const ss = (v: number) => THREE.MathUtils.smoothstep(clamp01(v), 0, 1);
+const lerp = THREE.MathUtils.lerp;
 
 type ProgressRef = { current: number };
 
-function BlueprintBuild({
+function IsoCutaway({
   progressRef,
   reduced,
 }: {
@@ -169,19 +188,27 @@ function BlueprintBuild({
 }) {
   const { camera } = useThree();
   const buildingRef = useRef<THREE.Group>(null);
-  const deckRef = useRef<THREE.InstancedMesh>(null);
+  const deckRef = useRef<THREE.Group>(null);
   const insulRef = useRef<THREE.InstancedMesh>(null);
+  const coverRef = useRef<THREE.Group>(null);
   const membRef = useRef<THREE.Mesh>(null);
   const membMatRef = useRef<THREE.MeshStandardMaterial>(null);
   const edgeGroupRef = useRef<THREE.Group>(null);
   const glowRef = useRef<THREE.PointLight>(null);
-  const wallMatRef = useRef<THREE.MeshStandardMaterial>(null);
   const guideRef = useRef<THREE.Group>(null);
+  const wallMatRef = useRef<THREE.MeshStandardMaterial>(null);
 
-  const camTarget = useRef(new THREE.Vector3(0, 1.8, 0));
+  const camTarget = useRef(new THREE.Vector3(0, 2.2, 0));
   const dummy = useMemo(() => new THREE.Object3D(), []);
 
-  // ---- Structural columns on the bay grid (perimeter + interior line) ----
+  // Covered roof area (the cutaway leaves the far +x/+z corner open).
+  const roofW = BW * CUT;
+  const roofD = BD * CUT;
+  // Centered so the OPEN corner is on +x / +z (nearest the camera iso corner).
+  const roofCX = -BW / 2 + roofW / 2;
+  const roofCZ = -BD / 2 + roofD / 2;
+
+  // ---- Structural columns on the bay grid ----
   const columns = useMemo(() => {
     const arr: [number, number][] = [];
     const stepX = BW / BAYS_X;
@@ -194,30 +221,28 @@ function BlueprintBuild({
     return arr;
   }, []);
 
-  // ---- Edge beams: top plates running the full perimeter + interior grid ----
+  // ---- Top edge beams (roof-plate grid) ----
   const beams = useMemo(() => {
     const arr: { pos: [number, number, number]; size: [number, number, number] }[] =
       [];
     const stepX = BW / BAYS_X;
     const stepZ = BD / BAYS_Z;
-    // beams running along X at each Z grid line
     for (let r = 0; r <= BAYS_Z; r++) {
       arr.push({
         pos: [0, ROOF_Y, -BD / 2 + stepZ * r],
-        size: [BW, 0.14, 0.12],
+        size: [BW, 0.16, 0.14],
       });
     }
-    // beams running along Z at each X grid line
     for (let c = 0; c <= BAYS_X; c++) {
       arr.push({
         pos: [-BW / 2 + stepX * c, ROOF_Y, 0],
-        size: [0.12, 0.14, BD],
+        size: [0.14, 0.16, BD],
       });
     }
     return arr;
   }, []);
 
-  // ---- Open roof joists spanning the depth, spaced down the length ----
+  // ---- Open roof joists spanning the depth ----
   const joists = useMemo(() => {
     const arr: number[] = [];
     for (let j = 0; j < JOISTS; j++) {
@@ -226,52 +251,53 @@ function BlueprintBuild({
     return arr;
   }, []);
 
-  // ---- Loading-dock bay openings along the front (long) wall ----
+  // ---- Loading-dock bay openings along the front (+z) wall ----
   const dockBays = useMemo(() => {
     const arr: number[] = [];
     const n = 4;
     const span = BW * 0.6;
-    for (let i = 0; i < n; i++) {
-      arr.push(-span / 2 + (span / (n - 1)) * i);
-    }
+    for (let i = 0; i < n; i++) arr.push(-span / 2 + (span / (n - 1)) * i);
     return arr;
   }, []);
 
-  // Deck panel layout (long thin steel planks running across the depth).
-  const deckPanels = useMemo(() => {
+  // ---- Deck panels (corrugated planks running across the depth) ----
+  const deckPlanks = useMemo(() => {
     const arr: { x: number; w: number; seed: number }[] = [];
-    const w = BW / DECK_COLS;
-    for (let c = 0; c < DECK_COLS; c++) {
+    const cols = 8;
+    const w = roofW / cols;
+    for (let c = 0; c < cols; c++) {
       arr.push({
-        x: -BW / 2 + w * (c + 0.5),
-        w: w * 0.92,
-        seed: c / DECK_COLS,
+        x: roofCX - roofW / 2 + w * (c + 0.5),
+        w: w * 0.9,
+        seed: c / cols,
       });
     }
     return arr;
-  }, []);
+  }, [roofW, roofCX]);
 
-  // Insulation board layout (tiled grid).
+  // ---- Insulation board tile layout ----
   const insulBoards = useMemo(() => {
     const arr: { x: number; z: number; w: number; d: number; seed: number }[] =
       [];
-    const w = BW / INSUL_COLS;
-    const dd = BD / INSUL_ROWS;
+    const cols = 6;
+    const rows = 3;
+    const w = roofW / cols;
+    const dd = roofD / rows;
     let n = 0;
-    for (let c = 0; c < INSUL_COLS; c++) {
-      for (let r = 0; r < INSUL_ROWS; r++) {
+    for (let c = 0; c < cols; c++) {
+      for (let r = 0; r < rows; r++) {
         arr.push({
-          x: -BW / 2 + w * (c + 0.5),
-          z: -BD / 2 + dd * (r + 0.5),
+          x: roofCX - roofW / 2 + w * (c + 0.5),
+          z: roofCZ - roofD / 2 + dd * (r + 0.5),
           w: w * 0.93,
           d: dd * 0.93,
-          seed: n / (INSUL_COLS * INSUL_ROWS),
+          seed: n / (cols * rows),
         });
         n++;
       }
     }
     return arr;
-  }, []);
+  }, [roofW, roofD, roofCX, roofCZ]);
 
   useFrame((st, delta) => {
     const d = Math.min(delta, 0.05);
@@ -286,41 +312,49 @@ function BlueprintBuild({
     const A = CHAPTERS[i0];
     const B = CHAPTERS[i1];
 
-    const camPos = lerp3(A.camPos, B.camPos, local);
-    const camTgt = lerp3(A.camTarget, B.camTarget, local);
-    const deck = THREE.MathUtils.lerp(A.deck, B.deck, local);
-    const insul = THREE.MathUtils.lerp(A.insul, B.insul, local);
-    const memb = THREE.MathUtils.lerp(A.memb, B.memb, local);
-    const edge = THREE.MathUtils.lerp(A.edge, B.edge, local);
-    const lineDraw = THREE.MathUtils.lerp(A.lineDraw, B.lineDraw, local);
-    const glow = THREE.MathUtils.lerp(A.glow, B.glow, local);
+    const dist = lerp(A.dist, B.dist, local);
+    const panX = lerp(A.panX, B.panX, local);
+    const panY = lerp(A.panY, B.panY, local);
+    const deck = lerp(A.deck, B.deck, local);
+    const insul = lerp(A.insul, B.insul, local);
+    const cover = lerp(A.cover, B.cover, local);
+    const memb = lerp(A.memb, B.memb, local);
+    const edge = lerp(A.edge, B.edge, local);
+    const lineDraw = lerp(A.lineDraw, B.lineDraw, local);
+    const glow = lerp(A.glow, B.glow, local);
 
-    // ---- camera: damp toward target position + lookAt ----
+    // ---- ISOMETRIC camera: fixed angle, damp distance + pan only ----
     const damp = reduced ? 12 : 3.4;
-    camera.position.x = THREE.MathUtils.damp(camera.position.x, camPos[0], damp, d);
-    camera.position.y = THREE.MathUtils.damp(camera.position.y, camPos[1], damp, d);
-    camera.position.z = THREE.MathUtils.damp(camera.position.z, camPos[2], damp, d);
-    camTarget.current.x = THREE.MathUtils.damp(camTarget.current.x, camTgt[0], damp, d);
-    camTarget.current.y = THREE.MathUtils.damp(camTarget.current.y, camTgt[1], damp, d);
-    camTarget.current.z = THREE.MathUtils.damp(camTarget.current.z, camTgt[2], damp, d);
+    const tx = ISO.x * dist;
+    const ty = ISO.y * dist;
+    const tz = ISO.z * dist;
+    camera.position.x = THREE.MathUtils.damp(camera.position.x, tx, damp, d);
+    camera.position.y = THREE.MathUtils.damp(camera.position.y, ty, damp, d);
+    camera.position.z = THREE.MathUtils.damp(camera.position.z, tz, damp, d);
+
+    camTarget.current.x = THREE.MathUtils.damp(camTarget.current.x, panX, damp, d);
+    camTarget.current.y = THREE.MathUtils.damp(camTarget.current.y, panY, damp, d);
+    camTarget.current.z = THREE.MathUtils.damp(camTarget.current.z, 0, damp, d);
+
+    // gentle idle float on the iso angle (parallax feel without breaking iso)
     if (!reduced) {
-      camera.position.x += Math.sin(t * 0.16) * 0.28;
-      camera.position.y += Math.cos(t * 0.13) * 0.14;
+      camera.position.x += Math.sin(t * 0.14) * 0.25;
+      camera.position.y += Math.cos(t * 0.11) * 0.14;
     }
     camera.lookAt(camTarget.current);
 
-    // ---- building: gentle idle rotation ----
+    // building idle micro-rotation
     if (buildingRef.current) {
-      const idleRotY = reduced ? 0 : Math.sin(t * 0.07) * 0.1;
+      const idle = reduced ? 0 : Math.sin(t * 0.06) * 0.05;
       buildingRef.current.rotation.y = THREE.MathUtils.damp(
         buildingRef.current.rotation.y,
-        idleRotY,
+        idle,
         2,
         d
       );
     }
 
-    // ---- blueprint construction guide lines fade as the build completes ----
+    // ---- blueprint construction guide lines fade as build completes ----
     if (guideRef.current) {
       guideRef.current.visible = lineDraw > 0.02;
       const flick = reduced ? 1 : 0.75 + 0.25 * Math.sin(t * 1.4);
@@ -332,38 +366,34 @@ function BlueprintBuild({
 
     // wall fill brightens slightly as it "becomes real"
     if (wallMatRef.current) {
-      wallMatRef.current.opacity = 0.1 + (1 - lineDraw) * 0.14;
+      wallMatRef.current.opacity = 0.1 + (1 - lineDraw) * 0.12;
     }
 
-    // ---- DECK: thin steel planks drop from above into place, staggered ----
-    const deckMesh = deckRef.current;
-    if (deckMesh) {
-      for (let k = 0; k < deckPanels.length; k++) {
-        const pl = deckPanels[k];
-        const a = clamp01((deck - pl.seed * 0.35) / 0.65);
-        const ease = ss(a);
-        const dropY = DECK_Y + (1 - ease) * 5;
-        const sc = ease < 0.001 ? 0.0001 : 1;
-        dummy.position.set(pl.x, dropY, 0);
-        dummy.scale.set(pl.w, 0.05, BD * 0.96 * sc);
-        dummy.updateMatrix();
-        deckMesh.setMatrixAt(k, dummy.matrix);
-      }
-      deckMesh.instanceMatrix.needsUpdate = true;
-      deckMesh.visible = deck > 0.001;
+    // ---- DECK: planks descend from exploded height and seat, staggered ----
+    if (deckRef.current) {
+      deckRef.current.children.forEach((child, k) => {
+        const pl = deckPlanks[k];
+        if (!pl) return;
+        const a = clamp01((deck - pl.seed * 0.3) / 0.7);
+        const e = ss(a);
+        child.visible = deck > 0.001;
+        child.position.y = Y_DECK + (1 - e) * EX_DECK;
+        const m = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
+        if (m) m.opacity = 0.55 + e * 0.45;
+      });
     }
 
-    // ---- INSULATION: boards tile in, slight lift-and-settle ----
+    // ---- INSULATION: boards lower and tile in ----
     const insulMesh = insulRef.current;
     if (insulMesh) {
       for (let k = 0; k < insulBoards.length; k++) {
         const b = insulBoards[k];
         const a = clamp01((insul - b.seed * 0.4) / 0.6);
-        const ease = ss(a);
-        const y = INSUL_Y + (1 - ease) * 2.5;
-        const sc = ease < 0.001 ? 0.0001 : ease;
+        const e = ss(a);
+        const y = Y_INSUL + (1 - e) * EX_INSUL;
+        const sc = e < 0.001 ? 0.0001 : 1;
         dummy.position.set(b.x, y, b.z);
-        dummy.scale.set(b.w * sc, 0.08, b.d * sc);
+        dummy.scale.set(b.w * sc, T_INSUL, b.d * sc);
         dummy.updateMatrix();
         insulMesh.setMatrixAt(k, dummy.matrix);
       }
@@ -371,15 +401,29 @@ function BlueprintBuild({
       insulMesh.visible = insul > 0.001;
     }
 
-    // ---- MEMBRANE: red sheet rolls across the roof (scale X 0 -> full) ----
+    // ---- COVER BOARD: single slab lowers over insulation ----
+    if (coverRef.current) {
+      const e = ss(cover);
+      coverRef.current.visible = cover > 0.001;
+      coverRef.current.position.y = Y_COVER + (1 - e) * EX_COVER;
+      const m = (coverRef.current.children[0] as THREE.Mesh)
+        ?.material as THREE.MeshStandardMaterial;
+      if (m) m.opacity = 0.5 + e * 0.45;
+    }
+
+    // ---- MEMBRANE: red sheet lowers then unrolls across (scale x) ----
     if (membRef.current && membMatRef.current) {
-      const roll = ss(memb);
-      membRef.current.visible = roll > 0.001;
-      membRef.current.scale.x = Math.max(0.0001, roll);
-      // anchor the roll to one edge so it appears to unroll across
-      membRef.current.position.x = -((BW * 0.98) / 2) * (1 - roll);
+      const e = ss(memb);
+      membRef.current.visible = memb > 0.001;
+      // lower into place over first half, unroll across second half
+      const lowering = clamp01(e / 0.45);
+      const rolling = clamp01((e - 0.45) / 0.55);
+      membRef.current.position.y = Y_MEMB + (1 - ss(lowering)) * EX_MEMB;
+      const roll = Math.max(0.0001, ss(rolling));
+      membRef.current.scale.x = roll;
+      membRef.current.position.x = roofCX - (roofW / 2) * (1 - roll);
       membMatRef.current.emissiveIntensity = 0.25 + glow * 0.9;
-      membMatRef.current.opacity = 0.35 + roll * 0.55;
+      membMatRef.current.opacity = 0.4 + e * 0.55;
     }
 
     // ---- EDGE METAL: perimeter parapet caps snap on ----
@@ -388,19 +432,19 @@ function BlueprintBuild({
       edgeGroupRef.current.visible = e > 0.01;
       const s = e < 0.001 ? 0.0001 : e;
       edgeGroupRef.current.scale.set(1, s, 1);
-      edgeGroupRef.current.position.y = (1 - e) * 1.5;
+      edgeGroupRef.current.position.y = (1 - e) * 1.2;
     }
 
     // ---- warm red glow from the sealed roof ----
     if (glowRef.current) {
       const pulse = reduced ? 1 : 0.85 + 0.15 * Math.sin(t * 0.7);
-      glowRef.current.intensity = glow * 30 * pulse;
+      glowRef.current.intensity = glow * 26 * pulse;
     }
   });
 
   return (
     <group>
-      {/* subtle blueprint ground grid */}
+      {/* faint blueprint ground grid */}
       <gridHelper
         args={[80, 80, "#1c1c22", "#141418"]}
         position={[0, -0.001, 0]}
@@ -411,7 +455,7 @@ function BlueprintBuild({
       </mesh>
 
       <group ref={buildingRef}>
-        {/* ---- translucent wall skin (low, open top so roof is clearly missing) ---- */}
+        {/* ---- translucent wall skin (open top so roof is clearly the focus) ---- */}
         {[
           { pos: [0, BH / 2, BD / 2], size: [BW, BH, 0.05] },
           { pos: [0, BH / 2, -BD / 2], size: [BW, BH, 0.05] },
@@ -441,7 +485,7 @@ function BlueprintBuild({
           </mesh>
         ))}
 
-        {/* ---- edge / interior top beams (the roof-plate grid) ---- */}
+        {/* ---- edge / interior top beams (roof-plate grid) ---- */}
         {beams.map((b, i) => (
           <mesh key={`beam${i}`} position={b.pos}>
             <boxGeometry args={b.size} />
@@ -450,7 +494,7 @@ function BlueprintBuild({
           </mesh>
         ))}
 
-        {/* ---- open roof joists spanning the depth (the visible open structure) ---- */}
+        {/* ---- open roof joists spanning the depth ---- */}
         {joists.map((x, i) => (
           <mesh key={`joist${i}`} position={[x, ROOF_Y - 0.06, 0]}>
             <boxGeometry args={[0.05, 0.16, BD * 0.98]} />
@@ -458,22 +502,17 @@ function BlueprintBuild({
           </mesh>
         ))}
 
-        {/* ---- loading-dock bay openings on the front wall (detail) ---- */}
+        {/* ---- loading-dock bay openings on the front wall ---- */}
         {dockBays.map((x, i) => (
-          <mesh key={`dock${i}`} position={[x, 0.85, BD / 2 + 0.03]}>
-            <boxGeometry args={[1.4, 1.7, 0.06]} />
-            <meshStandardMaterial
-              color="#0E0E10"
-              transparent
-              opacity={0.85}
-              roughness={1}
-            />
+          <mesh key={`dock${i}`} position={[x, 0.9, BD / 2 + 0.03]}>
+            <boxGeometry args={[1.4, 1.8, 0.06]} />
+            <meshStandardMaterial color="#0E0E10" transparent opacity={0.85} roughness={1} />
             <Edges threshold={12} color={LINE} />
           </mesh>
         ))}
 
-        {/* ---- entrance canopy at one end (detail) ---- */}
-        <mesh position={[-BW / 2 - 0.6, 1.9, 0]}>
+        {/* ---- entrance canopy at one end ---- */}
+        <mesh position={[-BW / 2 - 0.6, 2.0, 0]}>
           <boxGeometry args={[1.2, 0.08, 3]} />
           <meshStandardMaterial color="#26262c" roughness={0.7} metalness={0.35} />
           <Edges threshold={12} color={LINE} />
@@ -481,7 +520,7 @@ function BlueprintBuild({
 
         {/* ---- construction guide lines (fade as build completes) ---- */}
         <group ref={guideRef}>
-          {/* roof-plane outline drawn as a thin frame */}
+          {/* full roof-plane outline drawn as a thin frame */}
           <lineSegments position={[0, ROOF_Y + 0.02, 0]}>
             <edgesGeometry args={[new THREE.BoxGeometry(BW, 0.01, BD)]} />
             <lineBasicMaterial color={LINE} transparent opacity={0.4} />
@@ -505,17 +544,29 @@ function BlueprintBuild({
           </lineSegments>
         </group>
 
-        {/* ---- ROOF LAYER 1: steel deck panels ---- */}
-        <instancedMesh
-          ref={deckRef}
-          args={[undefined, undefined, deckPanels.length]}
-          visible={false}
-        >
-          <boxGeometry args={[1, 1, 1]} />
-          <meshStandardMaterial color={STEEL} roughness={0.5} metalness={0.6} />
-        </instancedMesh>
+        {/* ============================================================
+            EXPOSED ROOF ASSEMBLY — sits on the covered corner; the rest of
+            the roof plane stays OPEN (the cutaway). Layers explode/settle.
+            ============================================================ */}
 
-        {/* ---- ROOF LAYER 2: insulation boards ---- */}
+        {/* ---- LAYER 1: steel deck planks ---- */}
+        <group ref={deckRef}>
+          {deckPlanks.map((pl, i) => (
+            <mesh key={`deck${i}`} position={[pl.x, Y_DECK, roofCZ]} visible={false}>
+              <boxGeometry args={[pl.w, T_DECK, roofD * 0.98]} />
+              <meshStandardMaterial
+                color={STEEL}
+                roughness={0.5}
+                metalness={0.6}
+                transparent
+                opacity={1}
+              />
+              <Edges threshold={14} color={LINE} />
+            </mesh>
+          ))}
+        </group>
+
+        {/* ---- LAYER 2: insulation boards (instanced) ---- */}
         <instancedMesh
           ref={insulRef}
           args={[undefined, undefined, insulBoards.length]}
@@ -525,28 +576,43 @@ function BlueprintBuild({
           <meshStandardMaterial color={INSUL} roughness={0.95} metalness={0} />
         </instancedMesh>
 
-        {/* ---- ROOF LAYER 3: red membrane (unrolls across) ---- */}
-        <mesh ref={membRef} position={[0, MEMB_Y, 0]} visible={false}>
-          <boxGeometry args={[BW * 0.98, 0.04, BD * 0.98]} />
+        {/* ---- LAYER 3: cover board (single slab) ---- */}
+        <group ref={coverRef} visible={false}>
+          <mesh position={[roofCX, Y_COVER, roofCZ]}>
+            <boxGeometry args={[roofW * 0.99, T_COVER, roofD * 0.99]} />
+            <meshStandardMaterial
+              color={COVER}
+              roughness={0.85}
+              metalness={0.05}
+              transparent
+              opacity={0.9}
+            />
+            <Edges threshold={14} color={LINE} />
+          </mesh>
+        </group>
+
+        {/* ---- LAYER 4: red membrane (lowers, then unrolls across) ---- */}
+        <mesh ref={membRef} position={[roofCX, Y_MEMB, roofCZ]} visible={false}>
+          <boxGeometry args={[roofW * 0.99, T_MEMB, roofD * 0.99]} />
           <meshStandardMaterial
             ref={membMatRef}
             color={ACCENT}
             emissive={ACCENT}
             emissiveIntensity={0.4}
             transparent
-            opacity={0.85}
+            opacity={0.9}
             roughness={0.5}
             metalness={0.1}
           />
         </mesh>
 
-        {/* ---- ROOF LAYER 4: perimeter edge metal / parapet caps (snaps on) ---- */}
-        <group ref={edgeGroupRef} position={[0, EDGE_Y, 0]} visible={false}>
+        {/* ---- LAYER 5: perimeter edge metal / parapet caps (snap on) ---- */}
+        <group ref={edgeGroupRef} position={[roofCX, Y_MEMB + T_MEMB / 2 + 0.06, roofCZ]} visible={false}>
           {[
-            { pos: [0, 0, BD / 2], size: [BW, 0.16, 0.1] },
-            { pos: [0, 0, -BD / 2], size: [BW, 0.16, 0.1] },
-            { pos: [BW / 2, 0, 0], size: [0.1, 0.16, BD] },
-            { pos: [-BW / 2, 0, 0], size: [0.1, 0.16, BD] },
+            { pos: [0, 0, roofD / 2], size: [roofW, 0.16, 0.1] },
+            { pos: [0, 0, -roofD / 2], size: [roofW, 0.16, 0.1] },
+            { pos: [roofW / 2, 0, 0], size: [0.1, 0.16, roofD] },
+            { pos: [-roofW / 2, 0, 0], size: [0.1, 0.16, roofD] },
           ].map((f, i) => (
             <mesh key={`edge${i}`} position={f.pos as [number, number, number]}>
               <boxGeometry args={f.size as [number, number, number]} />
@@ -554,11 +620,11 @@ function BlueprintBuild({
               <Edges threshold={12} color={LINE} />
             </mesh>
           ))}
-          {/* rooftop units (HVAC) sitting on the finished roof — commercial detail */}
+          {/* rooftop HVAC units on the finished roof — commercial detail */}
           {[
-            [-BW * 0.28, 0.28, -BD * 0.15],
-            [BW * 0.05, 0.28, BD * 0.12],
-            [BW * 0.3, 0.28, -BD * 0.1],
+            [roofCX - roofW * 0.22, 0.28, roofCZ - roofD * 0.12],
+            [roofCX + roofW * 0.05, 0.28, roofCZ + roofD * 0.1],
+            [roofCX + roofW * 0.26, 0.28, roofCZ - roofD * 0.08],
           ].map((p, i) => (
             <mesh key={`rtu${i}`} position={p as [number, number, number]}>
               <boxGeometry args={[1.1, 0.5, 0.9]} />
@@ -571,17 +637,17 @@ function BlueprintBuild({
 
       {/* lighting tuned to the palette */}
       <ambientLight intensity={0.5} />
-      <directionalLight position={[10, 16, 8]} intensity={1.15} color="#fff4f0" />
-      <pointLight position={[-14, 6, 7]} intensity={12} distance={44} color={ACCENT} />
+      <directionalLight position={[12, 18, 8]} intensity={1.15} color="#fff4f0" />
+      <pointLight position={[-14, 6, 7]} intensity={10} distance={44} color={ACCENT} />
       {/* warm glow that rises from the sealed roof in the final chapters */}
       <pointLight
         ref={glowRef}
-        position={[0, ROOF_Y + 1.4, 0]}
+        position={[roofCX, ROOF_Y + 1.4, roofCZ]}
         intensity={0}
         distance={22}
         color={ACCENT}
       />
-      <fog attach="fog" args={[BG, 20, 60]} />
+      <fog attach="fog" args={[BG, 22, 66]} />
     </group>
   );
 }
@@ -614,10 +680,10 @@ export default function ScrollScene() {
     <Canvas
       dpr={[1, 1.75]}
       gl={{ antialias: true, powerPreference: "high-performance", alpha: true }}
-      camera={{ position: [17, 7.5, 18], fov: 42, near: 0.1, far: 120 }}
+      camera={{ position: [24, 20, 24], fov: 34, near: 0.1, far: 140 }}
     >
       <color attach="background" args={[BG]} />
-      <BlueprintBuild progressRef={progressRef} reduced={reducedRef.current} />
+      <IsoCutaway progressRef={progressRef} reduced={reducedRef.current} />
     </Canvas>
   );
 }
