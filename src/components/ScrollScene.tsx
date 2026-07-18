@@ -2,109 +2,127 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Edges } from "@react-three/drei";
 import * as THREE from "three";
 
-/* ------------------------------------------------------------------ *
- * Persistent scroll-driven roofscape scene.
+/* ------------------------------------------------------------------------- *
+ * Persistent scroll-driven "Blueprint Build" scene.
  * ONE canvas fixed behind the whole page. Native scroll is the scrubber.
- * Scroll progress lives in a mutable ref (never state). Six chapters,
- * one per page section, each defining a camera + field + scan target
- * state. useFrame maps scroll -> active chapter pair, smoothstep-blends,
- * then damps the live values toward the target so it always feels smooth.
- * ------------------------------------------------------------------ */
+ *
+ * A single commercial building is drawn as a 3D technical sketch (glowing
+ * edge lines + faint translucent surfaces). It starts as bare walls with an
+ * OPEN top — no roof. As you scroll, the roof assembles one layer at a time:
+ *   deck panels -> insulation boards -> red membrane -> perimeter edge metal.
+ *
+ * Scroll progress lives in a mutable ref (never state). Six chapters, one per
+ * page section, each defining a camera target + how far the build has
+ * progressed. useFrame smoothsteps between chapters and damps toward targets.
+ * ------------------------------------------------------------------------- */
 
 const BG = "#0E0E10";
 const ACCENT = new THREE.Color("#C8262B");
-const ROOF_DARK = new THREE.Color("#1A1A1F");
-const ROOF_LIT = new THREE.Color("#2A2A31");
+const LINE = new THREE.Color("#F4F2EE"); // blueprint edge line
+const STEEL = new THREE.Color("#3A3A42"); // deck panels
+const INSUL = new THREE.Color("#6E6E4A"); // insulation boards (muted)
+const METAL = new THREE.Color("#8A8A93"); // edge metal
 
-// Roof field grid dimensions (reduced on mobile via prop).
+// Building footprint (world units).
+const BW = 9; // width  (x)
+const BD = 6; // depth  (z)
+const BH = 2.6; // wall height (y)
+const ROOF_Y = BH; // top of walls = roof plane
+
+// Roof layer stacking heights (thin), sitting just above the wall top.
+const DECK_Y = ROOF_Y + 0.06;
+const INSUL_Y = ROOF_Y + 0.16;
+const MEMB_Y = ROOF_Y + 0.26;
+const EDGE_Y = ROOF_Y + 0.2;
+
+// Deck / insulation grid resolution.
+const DECK_COLS = 7; // panels run across width
+const INSUL_COLS = 6;
+const INSUL_ROWS = 4;
+
 type ChapterState = {
   camPos: [number, number, number];
   camTarget: [number, number, number];
-  fieldPos: [number, number, number];
-  fieldRotX: number;
-  fieldSpread: number; // gap multiplier between roofs
-  scanX: number; // world-x the scan beam parks / sweeps around
-  scanSweep: number; // amplitude of scan travel (0 = parked)
-  scanGlow: number; // 0..1 emissive intensity of scan + lit roof
-  ring: number; // 0..1 coverage-ring visibility
+  // build phase 0..1 for each roof layer (drives assemble + fade-in)
+  deck: number;
+  insul: number;
+  memb: number;
+  edge: number;
+  lineDraw: number; // 0..1 blueprint construction-line intensity (fades as built)
+  glow: number; // warm red glow behind finished roof
 };
 
 // Chapter map — order matches page sections:
 // 0 HERO, 1 SYSTEMS, 2 VERTICALS, 3 APPROACH, 4 COVERAGE, 5 CONTACT
 const CHAPTERS: ChapterState[] = [
   {
-    // HERO — high aerial establishing shot, wide slow sweep
-    camPos: [0, 15.5, 15],
-    camTarget: [1.5, 0, -2],
-    fieldPos: [1.5, 0, 0],
-    fieldRotX: 0,
-    fieldSpread: 1,
-    scanX: 0,
-    scanSweep: 9,
-    scanGlow: 0.55,
-    ring: 0,
+    // HERO — open steel frame, no roof. Slow orbit, blueprint lines drawing in.
+    camPos: [10, 6.5, 12],
+    camTarget: [0, 1.6, 0],
+    deck: 0,
+    insul: 0,
+    memb: 0,
+    edge: 0,
+    lineDraw: 1,
+    glow: 0,
   },
   {
-    // SYSTEMS — descend to low oblique over one cluster; scan parks + membrane glows
-    camPos: [6.5, 6, 12],
-    camTarget: [3.5, 0.4, -1],
-    fieldPos: [3.2, 0, 1],
-    fieldRotX: 0.12,
-    fieldSpread: 1.05,
-    scanX: 2.4,
-    scanSweep: 0.6,
-    scanGlow: 1,
-    ring: 0,
+    // SYSTEMS — descend to top-down oblique; steel DECK panels drop into place.
+    camPos: [5, 8.5, 9],
+    camTarget: [0, 2.4, 0],
+    deck: 1,
+    insul: 0,
+    memb: 0,
+    edge: 0,
+    lineDraw: 0.85,
+    glow: 0,
   },
   {
-    // VERTICALS — pull back up + rotate; roofs re-space into looser clusters
-    camPos: [-3, 12, 14],
-    camTarget: [0.5, 0, -1],
-    fieldPos: [0, 0, 0],
-    fieldRotX: -0.06,
-    fieldSpread: 1.45,
-    scanX: 0,
-    scanSweep: 2.5,
-    scanGlow: 0.4,
-    ring: 0,
+    // VERTICALS — pull back + rotate; INSULATION boards tile in over the deck.
+    camPos: [-8, 7, 10],
+    camTarget: [0, 2.3, 0],
+    deck: 1,
+    insul: 1,
+    memb: 0,
+    edge: 0,
+    lineDraw: 0.6,
+    glow: 0,
   },
   {
-    // APPROACH — low dolly along the field, inspection line tracks with camera
-    camPos: [7, 4.5, 9],
-    camTarget: [4, 0.2, -3],
-    fieldPos: [4.5, 0, 0.5],
-    fieldRotX: 0.1,
-    fieldSpread: 1.1,
-    scanX: 3.5,
-    scanSweep: 5,
-    scanGlow: 0.85,
-    ring: 0,
+    // APPROACH — low tracking dolly along the roof edge; RED MEMBRANE rolls across.
+    camPos: [8, 4, 7.5],
+    camTarget: [-0.5, 2.6, -0.5],
+    deck: 1,
+    insul: 1,
+    memb: 1,
+    edge: 0,
+    lineDraw: 0.35,
+    glow: 0.5,
   },
   {
-    // COVERAGE — highest wide shot, field spreads statewide, range rings emanate
-    camPos: [0, 19, 16],
-    camTarget: [0, 0, -2],
-    fieldPos: [0, 0, 0],
-    fieldRotX: 0,
-    fieldSpread: 1.7,
-    scanX: 0,
-    scanSweep: 11,
-    scanGlow: 0.5,
-    ring: 1,
+    // COVERAGE — lift to wide establishing shot; perimeter EDGE METAL snaps on.
+    camPos: [0, 10.5, 13],
+    camTarget: [0, 1.8, 0],
+    deck: 1,
+    insul: 1,
+    memb: 1,
+    edge: 1,
+    lineDraw: 0.12,
+    glow: 0.6,
   },
   {
-    // CONTACT — calm near-static framing, field dims, single warm glow centered
-    camPos: [0, 13, 15],
-    camTarget: [0, 0, -1],
-    fieldPos: [0, -0.4, 0],
-    fieldRotX: 0,
-    fieldSpread: 1.1,
-    scanX: 0,
-    scanSweep: 0,
-    scanGlow: 0.7,
-    ring: 0,
+    // CONTACT — calm slow rotation; finished building, warm red glow from the roof.
+    camPos: [7, 5.5, 11],
+    camTarget: [0, 1.9, 0],
+    deck: 1,
+    insul: 1,
+    memb: 1,
+    edge: 1,
+    lineDraw: 0,
+    glow: 0.85,
   },
 ];
 
@@ -120,196 +138,325 @@ function lerp3(
   ];
 }
 
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+const ss = (v: number) => THREE.MathUtils.smoothstep(clamp01(v), 0, 1);
+
 type ProgressRef = { current: number };
 
-function Roofscape({
+function BlueprintBuild({
   progressRef,
   reduced,
-  cols,
-  rows,
 }: {
   progressRef: ProgressRef;
   reduced: boolean;
-  cols: number;
-  rows: number;
 }) {
   const { camera } = useThree();
-  const fieldRef = useRef<THREE.Group>(null);
-  const meshRef = useRef<THREE.InstancedMesh>(null);
-  const scanRef = useRef<THREE.Mesh>(null);
-  const scanMatRef = useRef<THREE.MeshBasicMaterial>(null);
-  const ringRef = useRef<THREE.Mesh>(null);
-  const ringMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const buildingRef = useRef<THREE.Group>(null);
+  const deckRef = useRef<THREE.InstancedMesh>(null);
+  const insulRef = useRef<THREE.InstancedMesh>(null);
+  const membRef = useRef<THREE.Mesh>(null);
+  const membMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const edgeGroupRef = useRef<THREE.Group>(null);
+  const glowRef = useRef<THREE.PointLight>(null);
+  const wallMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const guideRef = useRef<THREE.Group>(null);
 
-  // live camera target we damp toward, then lookAt each frame
-  const camTarget = useRef(new THREE.Vector3(1.5, 0, -2));
+  const camTarget = useRef(new THREE.Vector3(0, 1.6, 0));
   const dummy = useMemo(() => new THREE.Object3D(), []);
-  const tmpColor = useMemo(() => new THREE.Color(), []);
 
-  // Per-roof base layout: position on grid + a stable pseudo-random footprint.
-  const roofs = useMemo(() => {
-    const arr: {
-      gx: number;
-      gz: number;
-      w: number;
-      d: number;
-      h: number;
-      seed: number;
-    }[] = [];
-    for (let c = 0; c < cols; c++) {
-      for (let r = 0; r < rows; r++) {
-        const seed = Math.abs(Math.sin(c * 12.9 + r * 78.2));
-        const seed2 = Math.abs(Math.sin(c * 4.1 + r * 22.4));
+  // Deck panel layout (long thin steel planks running across the width).
+  const deckPanels = useMemo(() => {
+    const arr: { x: number; w: number; seed: number }[] = [];
+    const w = BW / DECK_COLS;
+    for (let c = 0; c < DECK_COLS; c++) {
+      arr.push({
+        x: -BW / 2 + w * (c + 0.5),
+        w: w * 0.9,
+        seed: c / DECK_COLS,
+      });
+    }
+    return arr;
+  }, []);
+
+  // Insulation board layout (tiled grid).
+  const insulBoards = useMemo(() => {
+    const arr: { x: number; z: number; w: number; d: number; seed: number }[] =
+      [];
+    const w = BW / INSUL_COLS;
+    const dd = BD / INSUL_ROWS;
+    let n = 0;
+    for (let c = 0; c < INSUL_COLS; c++) {
+      for (let r = 0; r < INSUL_ROWS; r++) {
         arr.push({
-          gx: c - (cols - 1) / 2,
-          gz: r - (rows - 1) / 2,
-          w: 0.55 + seed * 0.5,
-          d: 0.55 + seed2 * 0.5,
-          h: 0.18 + seed * 0.5,
-          seed,
+          x: -BW / 2 + w * (c + 0.5),
+          z: -BD / 2 + dd * (r + 0.5),
+          w: w * 0.92,
+          d: dd * 0.92,
+          seed: n / (INSUL_COLS * INSUL_ROWS),
         });
+        n++;
       }
     }
     return arr;
-  }, [cols, rows]);
+  }, []);
 
-  const count = roofs.length;
-
-  useFrame((_, delta) => {
+  useFrame((st, delta) => {
     const d = Math.min(delta, 0.05);
     const p = progressRef.current;
+    const t = reduced ? 0 : st.clock.elapsedTime;
 
-    // Map global progress (0..1) into chapter index + local blend.
+    // progress -> chapter pair + smoothstepped local blend
     const seg = p * (CHAPTERS.length - 1);
     const i0 = Math.min(CHAPTERS.length - 1, Math.floor(seg));
     const i1 = Math.min(CHAPTERS.length - 1, i0 + 1);
-    const localRaw = seg - i0;
-    const local = THREE.MathUtils.smoothstep(localRaw, 0, 1);
+    const local = ss(seg - i0);
     const A = CHAPTERS[i0];
     const B = CHAPTERS[i1];
 
-    // interpolated chapter target state
     const camPos = lerp3(A.camPos, B.camPos, local);
     const camTgt = lerp3(A.camTarget, B.camTarget, local);
-    const fieldPos = lerp3(A.fieldPos, B.fieldPos, local);
-    const fieldRotX = THREE.MathUtils.lerp(A.fieldRotX, B.fieldRotX, local);
-    const spread = THREE.MathUtils.lerp(A.fieldSpread, B.fieldSpread, local);
-    const scanXBase = THREE.MathUtils.lerp(A.scanX, B.scanX, local);
-    const scanSweep = THREE.MathUtils.lerp(A.scanSweep, B.scanSweep, local);
-    const scanGlow = THREE.MathUtils.lerp(A.scanGlow, B.scanGlow, local);
-    const ring = THREE.MathUtils.lerp(A.ring, B.ring, local);
-
-    const t = reduced ? 0 : _.clock.elapsedTime;
+    const deck = THREE.MathUtils.lerp(A.deck, B.deck, local);
+    const insul = THREE.MathUtils.lerp(A.insul, B.insul, local);
+    const memb = THREE.MathUtils.lerp(A.memb, B.memb, local);
+    const edge = THREE.MathUtils.lerp(A.edge, B.edge, local);
+    const lineDraw = THREE.MathUtils.lerp(A.lineDraw, B.lineDraw, local);
+    const glow = THREE.MathUtils.lerp(A.glow, B.glow, local);
 
     // ---- camera: damp toward target position + lookAt ----
-    const damp = reduced ? 12 : 3.2;
+    const damp = reduced ? 12 : 3.4;
     camera.position.x = THREE.MathUtils.damp(camera.position.x, camPos[0], damp, d);
     camera.position.y = THREE.MathUtils.damp(camera.position.y, camPos[1], damp, d);
     camera.position.z = THREE.MathUtils.damp(camera.position.z, camPos[2], damp, d);
     camTarget.current.x = THREE.MathUtils.damp(camTarget.current.x, camTgt[0], damp, d);
     camTarget.current.y = THREE.MathUtils.damp(camTarget.current.y, camTgt[1], damp, d);
     camTarget.current.z = THREE.MathUtils.damp(camTarget.current.z, camTgt[2], damp, d);
-    // gentle idle pointer/float parallax (skipped for reduced motion)
     if (!reduced) {
-      camera.position.x += Math.sin(t * 0.18) * 0.25;
-      camera.position.y += Math.cos(t * 0.15) * 0.15;
+      camera.position.x += Math.sin(t * 0.16) * 0.22;
+      camera.position.y += Math.cos(t * 0.13) * 0.12;
     }
     camera.lookAt(camTarget.current);
 
-    // ---- field group: position, tilt, idle drift ----
-    if (fieldRef.current) {
-      const g = fieldRef.current;
-      g.position.x = THREE.MathUtils.damp(g.position.x, fieldPos[0], 3.5, d);
-      g.position.y = THREE.MathUtils.damp(g.position.y, fieldPos[1], 3.5, d);
-      g.position.z = THREE.MathUtils.damp(g.position.z, fieldPos[2], 3.5, d);
-      g.rotation.x = THREE.MathUtils.damp(g.rotation.x, fieldRotX, 3.5, d);
-      const idleRotY = reduced ? 0 : Math.sin(t * 0.05) * 0.06;
-      g.rotation.y = THREE.MathUtils.damp(g.rotation.y, idleRotY, 2, d);
+    // ---- building: gentle idle rotation ----
+    if (buildingRef.current) {
+      const idleRotY = reduced ? 0 : Math.sin(t * 0.08) * 0.12;
+      buildingRef.current.rotation.y = THREE.MathUtils.damp(
+        buildingRef.current.rotation.y,
+        idleRotY,
+        2,
+        d
+      );
     }
 
-    // ---- scan beam world-x (parked base + optional sweep) ----
-    const scanCycle = reduced ? 0.5 : (Math.sin(t * 0.6) * 0.5 + 0.5);
-    const scanX = scanXBase + (scanSweep > 0.001 ? (scanCycle - 0.5) * 2 * scanSweep : 0);
-    if (scanRef.current) {
-      scanRef.current.position.x = scanX;
-      scanRef.current.visible = scanGlow > 0.02;
-    }
-    if (scanMatRef.current) {
-      scanMatRef.current.opacity = 0.18 + scanGlow * 0.5;
-    }
-
-    // ---- coverage ring ----
-    if (ringRef.current && ringMatRef.current) {
-      ringRef.current.visible = ring > 0.02;
-      const pulse = reduced ? 1 : (0.6 + 0.4 * Math.sin(t * 0.8));
-      const s = 2 + ring * 12 * (reduced ? 1 : (0.85 + 0.15 * Math.sin(t * 0.5)));
-      ringRef.current.scale.set(s, s, s);
-      ringMatRef.current.opacity = ring * 0.35 * pulse;
+    // ---- blueprint construction guide lines fade as the build completes ----
+    if (guideRef.current) {
+      guideRef.current.visible = lineDraw > 0.02;
+      const flick = reduced ? 1 : 0.75 + 0.25 * Math.sin(t * 1.4);
+      guideRef.current.children.forEach((c) => {
+        const m = (c as THREE.LineSegments).material as THREE.LineBasicMaterial;
+        if (m) m.opacity = lineDraw * 0.5 * flick;
+      });
     }
 
-    // ---- instanced roofs: layout by spread, light the roofs near scan ----
-    const mesh = meshRef.current;
-    if (mesh) {
-      for (let k = 0; k < count; k++) {
-        const rf = roofs[k];
-        const x = rf.gx * 1.15 * spread;
-        const z = rf.gz * 1.15 * spread;
-        const floatY = reduced ? 0 : Math.sin(t * 0.7 + rf.seed * 6.283) * 0.03;
-        dummy.position.set(x, rf.h / 2 + floatY, z);
-        dummy.scale.set(rf.w, rf.h, rf.d);
+    // wall fill brightens slightly as it "becomes real"
+    if (wallMatRef.current) {
+      wallMatRef.current.opacity = 0.1 + (1 - lineDraw) * 0.16;
+    }
+
+    // ---- DECK: thin steel planks drop from above into place, staggered ----
+    const deckMesh = deckRef.current;
+    if (deckMesh) {
+      for (let k = 0; k < deckPanels.length; k++) {
+        const pl = deckPanels[k];
+        const a = clamp01((deck - pl.seed * 0.35) / 0.65); // per-panel assemble
+        const ease = ss(a);
+        const dropY = DECK_Y + (1 - ease) * 4.5; // starts high, settles
+        const sc = ease < 0.001 ? 0.0001 : 1;
+        dummy.position.set(pl.x, dropY, 0);
+        dummy.scale.set(pl.w, 0.05, BD * 0.96 * sc);
         dummy.updateMatrix();
-        mesh.setMatrixAt(k, dummy.matrix);
-
-        // proximity of this roof (in field-local x) to the scan line
-        const prox = 1 - Math.min(1, Math.abs(x - scanX) / 1.2);
-        const lit = prox * scanGlow;
-        tmpColor.copy(ROOF_DARK).lerp(ROOF_LIT, 0.5 * prox);
-        tmpColor.lerp(ACCENT, lit * 0.85);
-        mesh.setColorAt(k, tmpColor);
+        deckMesh.setMatrixAt(k, dummy.matrix);
       }
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      deckMesh.instanceMatrix.needsUpdate = true;
+      deckMesh.visible = deck > 0.001;
+    }
+
+    // ---- INSULATION: boards tile in, slight lift-and-settle ----
+    const insulMesh = insulRef.current;
+    if (insulMesh) {
+      for (let k = 0; k < insulBoards.length; k++) {
+        const b = insulBoards[k];
+        const a = clamp01((insul - b.seed * 0.4) / 0.6);
+        const ease = ss(a);
+        const y = INSUL_Y + (1 - ease) * 2.5;
+        const sc = ease < 0.001 ? 0.0001 : ease;
+        dummy.position.set(b.x, y, b.z);
+        dummy.scale.set(b.w * sc, 0.08, b.d * sc);
+        dummy.updateMatrix();
+        insulMesh.setMatrixAt(k, dummy.matrix);
+      }
+      insulMesh.instanceMatrix.needsUpdate = true;
+      insulMesh.visible = insul > 0.001;
+    }
+
+    // ---- MEMBRANE: red sheet rolls across the roof (scale X 0 -> full) ----
+    if (membRef.current && membMatRef.current) {
+      const roll = ss(memb);
+      membRef.current.visible = roll > 0.001;
+      membRef.current.scale.x = Math.max(0.0001, roll);
+      // anchor the roll to one edge so it appears to unroll across
+      membRef.current.position.x = -((BW * 0.98) / 2) * (1 - roll);
+      membMatRef.current.emissiveIntensity = 0.25 + glow * 0.9;
+      membMatRef.current.opacity = 0.35 + roll * 0.55;
+    }
+
+    // ---- EDGE METAL: perimeter frames snap on ----
+    if (edgeGroupRef.current) {
+      const e = ss(edge);
+      edgeGroupRef.current.visible = e > 0.01;
+      const s = e < 0.001 ? 0.0001 : e;
+      edgeGroupRef.current.scale.set(1, s, 1);
+      edgeGroupRef.current.position.y = (1 - e) * 1.5;
+    }
+
+    // ---- warm red glow from the sealed roof ----
+    if (glowRef.current) {
+      const pulse = reduced ? 1 : 0.85 + 0.15 * Math.sin(t * 0.7);
+      glowRef.current.intensity = glow * 22 * pulse;
     }
   });
 
   return (
     <group>
-      {/* ground plane */}
+      {/* subtle blueprint ground grid */}
+      <gridHelper
+        args={[60, 60, "#1c1c22", "#141418"]}
+        position={[0, -0.001, 0]}
+      />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
         <planeGeometry args={[80, 80]} />
         <meshStandardMaterial color={BG} roughness={1} metalness={0} />
       </mesh>
 
-      <group ref={fieldRef}>
-        <instancedMesh ref={meshRef} args={[undefined, undefined, count]} castShadow={false}>
+      <group ref={buildingRef}>
+        {/* ---- walls: translucent fill + glowing blueprint edges, OPEN top ---- */}
+        {/* four wall panels (leaving the top open so the roof is clearly missing) */}
+        {[
+          { pos: [0, BH / 2, BD / 2], size: [BW, BH, 0.06] },
+          { pos: [0, BH / 2, -BD / 2], size: [BW, BH, 0.06] },
+          { pos: [BW / 2, BH / 2, 0], size: [0.06, BH, BD] },
+          { pos: [-BW / 2, BH / 2, 0], size: [0.06, BH, BD] },
+        ].map((w, i) => (
+          <mesh key={i} position={w.pos as [number, number, number]}>
+            <boxGeometry args={w.size as [number, number, number]} />
+            <meshStandardMaterial
+              ref={i === 0 ? wallMatRef : undefined}
+              color="#1F1F23"
+              transparent
+              opacity={0.12}
+              roughness={0.9}
+              metalness={0.05}
+            />
+            <Edges threshold={12} color={"#F4F2EE"} />
+          </mesh>
+        ))}
+
+        {/* corner posts — read as the steel frame */}
+        {[
+          [BW / 2, 0, BD / 2],
+          [-BW / 2, 0, BD / 2],
+          [BW / 2, 0, -BD / 2],
+          [-BW / 2, 0, -BD / 2],
+        ].map((p, i) => (
+          <mesh key={i} position={[p[0], BH / 2, p[2]]}>
+            <boxGeometry args={[0.12, BH, 0.12]} />
+            <meshStandardMaterial color={"#26262c"} roughness={0.7} metalness={0.3} />
+            <Edges threshold={12} color={"#F4F2EE"} />
+          </mesh>
+        ))}
+
+        {/* ---- construction guide lines (fade as build completes) ---- */}
+        <group ref={guideRef}>
+          {/* roof-plane outline drawn as a dashed-feeling frame of thin lines */}
+          <lineSegments position={[0, ROOF_Y + 0.02, 0]}>
+            <edgesGeometry args={[new THREE.BoxGeometry(BW, 0.01, BD)]} />
+            <lineBasicMaterial color={LINE} transparent opacity={0.4} />
+          </lineSegments>
+          {/* two diagonal survey lines across the open roof */}
+          <lineSegments position={[0, ROOF_Y + 0.03, 0]}>
+            <bufferGeometry>
+              <bufferAttribute
+                attach="attributes-position"
+                array={new Float32Array([
+                  -BW / 2, 0, -BD / 2, BW / 2, 0, BD / 2,
+                  -BW / 2, 0, BD / 2, BW / 2, 0, -BD / 2,
+                ])}
+                count={4}
+                itemSize={3}
+              />
+            </bufferGeometry>
+            <lineBasicMaterial color={ACCENT} transparent opacity={0.35} />
+          </lineSegments>
+        </group>
+
+        {/* ---- ROOF LAYER 1: steel deck panels ---- */}
+        <instancedMesh
+          ref={deckRef}
+          args={[undefined, undefined, deckPanels.length]}
+          visible={false}
+        >
           <boxGeometry args={[1, 1, 1]} />
-          <meshStandardMaterial roughness={0.85} metalness={0.1} />
+          <meshStandardMaterial color={STEEL} roughness={0.5} metalness={0.6} />
         </instancedMesh>
 
-        {/* scan beam — thin bright red membrane line sweeping the field */}
-        <mesh ref={scanRef} position={[0, 0.02, 0]}>
-          <boxGeometry args={[0.12, 0.9, rows * 1.6]} />
-          <meshBasicMaterial
-            ref={scanMatRef}
+        {/* ---- ROOF LAYER 2: insulation boards ---- */}
+        <instancedMesh
+          ref={insulRef}
+          args={[undefined, undefined, insulBoards.length]}
+          visible={false}
+        >
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={INSUL} roughness={0.95} metalness={0} />
+        </instancedMesh>
+
+        {/* ---- ROOF LAYER 3: red membrane (unrolls across) ---- */}
+        <mesh ref={membRef} position={[0, MEMB_Y, 0]} visible={false}>
+          <boxGeometry args={[BW * 0.98, 0.04, BD * 0.98]} />
+          <meshStandardMaterial
+            ref={membMatRef}
             color={ACCENT}
+            emissive={ACCENT}
+            emissiveIntensity={0.4}
             transparent
-            opacity={0.5}
-            toneMapped={false}
+            opacity={0.85}
+            roughness={0.5}
+            metalness={0.1}
           />
         </mesh>
 
-        {/* coverage range ring (COVERAGE chapter) */}
-        <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.05, 0]} visible={false}>
-          <ringGeometry args={[0.92, 1, 96]} />
-          <meshBasicMaterial ref={ringMatRef} color={ACCENT} transparent opacity={0} toneMapped={false} />
-        </mesh>
+        {/* ---- ROOF LAYER 4: perimeter edge metal (snaps on) ---- */}
+        <group ref={edgeGroupRef} position={[0, EDGE_Y, 0]} visible={false}>
+          {[
+            { pos: [0, 0, BD / 2], size: [BW, 0.14, 0.1] },
+            { pos: [0, 0, -BD / 2], size: [BW, 0.14, 0.1] },
+            { pos: [BW / 2, 0, 0], size: [0.1, 0.14, BD] },
+            { pos: [-BW / 2, 0, 0], size: [0.1, 0.14, BD] },
+          ].map((f, i) => (
+            <mesh key={i} position={f.pos as [number, number, number]}>
+              <boxGeometry args={f.size as [number, number, number]} />
+              <meshStandardMaterial color={METAL} roughness={0.35} metalness={0.75} />
+              <Edges threshold={12} color={"#F4F2EE"} />
+            </mesh>
+          ))}
+        </group>
       </group>
 
       {/* lighting tuned to the palette */}
       <ambientLight intensity={0.5} />
-      <directionalLight position={[6, 12, 6]} intensity={1.1} color={"#fff4f0"} />
-      <pointLight position={[-8, 4, 4]} intensity={18} distance={30} color={ACCENT} />
-      <fog attach="fog" args={[BG, 16, 46]} />
+      <directionalLight position={[7, 12, 6]} intensity={1.15} color={"#fff4f0"} />
+      <pointLight position={[-9, 5, 5]} intensity={10} distance={34} color={ACCENT} />
+      {/* warm glow that rises from the sealed roof in the final chapters */}
+      <pointLight ref={glowRef} position={[0, ROOF_Y + 1.2, 0]} intensity={0} distance={16} color={ACCENT} />
+      <fog attach="fog" args={[BG, 14, 42]} />
     </group>
   );
 }
@@ -317,9 +464,6 @@ function Roofscape({
 export default function ScrollScene() {
   const progressRef = useRef(0);
   const reducedRef = useRef(false);
-
-  // dimensions: fewer instances on small screens
-  const [cols, rows] = typeof window !== "undefined" && window.innerWidth < 720 ? [10, 8] : [16, 12];
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -345,15 +489,10 @@ export default function ScrollScene() {
     <Canvas
       dpr={[1, 1.75]}
       gl={{ antialias: true, powerPreference: "high-performance", alpha: true }}
-      camera={{ position: [0, 15.5, 15], fov: 42, near: 0.1, far: 100 }}
+      camera={{ position: [10, 6.5, 12], fov: 42, near: 0.1, far: 100 }}
     >
       <color attach="background" args={[BG]} />
-      <Roofscape
-        progressRef={progressRef}
-        reduced={reducedRef.current}
-        cols={cols}
-        rows={rows}
-      />
+      <BlueprintBuild progressRef={progressRef} reduced={reducedRef.current} />
     </Canvas>
   );
 }
