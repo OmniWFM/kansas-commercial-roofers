@@ -1,9 +1,79 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
 
 const PHONE_DISPLAY = "(316) 555-0142";
 const PHONE_TEL = "+13165550142";
+
+/* Designed fallback shown while the 3D scene loads, when WebGL is
+   unavailable, and for prefers-reduced-motion users. An abstract
+   aerial roofscape rendered in SVG, same palette as the live scene. */
+function HeroFallback() {
+  const cells = Array.from({ length: 11 * 6 });
+  return (
+    <div className="absolute inset-0" aria-hidden="true">
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(120% 90% at 50% 120%, rgba(200,38,43,0.14), transparent 55%)",
+        }}
+      />
+      <svg
+        viewBox="0 0 1200 700"
+        className="h-full w-full opacity-70"
+        preserveAspectRatio="xMidYMid slice"
+        fill="none"
+      >
+        <g transform="translate(160 120) scale(1 0.55) rotate(-18 440 260)">
+          {cells.map((_, i) => {
+            const col = i % 11;
+            const row = Math.floor(i / 11);
+            const seed = Math.abs(Math.sin(col * 12.9 + row * 4.1)) ;
+            const s = 46 + seed * 34;
+            const x = col * 80;
+            const y = row * 80;
+            return (
+              <rect
+                key={i}
+                x={x}
+                y={y}
+                width={s}
+                height={s}
+                rx={3}
+                fill="#1F1F23"
+                stroke="rgba(255,255,255,0.06)"
+                strokeWidth="1"
+              />
+            );
+          })}
+        </g>
+        <line
+          x1="600"
+          y1="0"
+          x2="600"
+          y2="700"
+          stroke="#C8262B"
+          strokeWidth="2"
+        />
+        <rect x="560" y="0" width="80" height="700" fill="url(#kcrScan)" />
+        <defs>
+          <linearGradient id="kcrScan" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stopColor="#C8262B" stopOpacity="0" />
+            <stop offset="0.5" stopColor="#C8262B" stopOpacity="0.28" />
+            <stop offset="1" stopColor="#C8262B" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
+  );
+}
+
+const RoofscapeHero = dynamic(() => import("@/components/RoofscapeHero"), {
+  ssr: false,
+  loading: () => <HeroFallback />,
+});
 
 const NAV = [
   { label: "Systems", href: "#systems" },
@@ -182,20 +252,27 @@ export default function Home() {
         </div>
       </header>
 
-      {/* HERO */}
+      {/* HERO — 3D aerial roofscape behind the copy */}
       <section className="relative overflow-hidden px-5 pt-40 pb-24 sm:px-8 sm:pt-48 sm:pb-28">
-        <div
-          className="pointer-events-none absolute inset-0 grain"
-          aria-hidden="true"
-        />
-        <div
-          className="pointer-events-none absolute inset-x-0 top-0 h-[420px] opacity-70"
-          style={{
-            background:
-              "radial-gradient(80% 120% at 50% -20%, rgba(200,38,43,0.18), transparent 60%)",
-          }}
-          aria-hidden="true"
-        />
+        {/* 3D scene layer */}
+        <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+          <div className="absolute inset-0">
+            <RoofscapeHero />
+          </div>
+          {/* readability scrim: darken the bottom-left where the copy sits */}
+          <div
+            className="absolute inset-0"
+            style={{
+              background:
+                "linear-gradient(90deg, rgba(14,14,16,0.92) 0%, rgba(14,14,16,0.72) 42%, rgba(14,14,16,0.25) 100%)",
+            }}
+          />
+          <div
+            className="absolute inset-x-0 bottom-0 h-40"
+            style={{ background: "linear-gradient(to top, #0E0E10, transparent)" }}
+          />
+        </div>
+
         <div className="relative mx-auto max-w-shell">
           <p className="eyebrow rise" style={{ animationDelay: "0.05s" }}>
             Industrial &amp; Commercial Roofing &middot; Kansas
