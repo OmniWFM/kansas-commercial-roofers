@@ -2,174 +2,153 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Edges } from "@react-three/drei";
+import { Edges, Instances, Instance } from "@react-three/drei";
 import * as THREE from "three";
 
-/* ---------------------------------------------------------------------------
- * Persistent scroll-driven "Isometric Cutaway" scene.
+/* ------------------------------------------------------------------------
+ * Persistent scroll-driven "Blueprint Build" scene.
  * ONE canvas fixed behind the whole page. Native scroll is the scrubber.
  *
- * A commercial building is drawn as an ISOMETRIC 3D technical cutaway —
- * translucent panel fills + glowing white edge lines (blueprint look). One
- * corner of the roof is peeled back so the FULL roof assembly is exposed as a
- * stack of separated, labeled layers:
- *   STEEL DECK -> INSULATION -> COVER BOARD -> RED MEMBRANE -> EDGE METAL.
+ * A FULL commercial building is drawn as an isometric 3D technical sketch —
+ * translucent panel fills + glowing white edge lines (blueprint look). It is
+ * NOT a box: two connected volumes (a taller office/entry block + a long
+ * low-slope warehouse wing), a structural steel bay grid, open roof joists,
+ * loading-dock bays, an entrance canopy, and rooftop units.
  *
- * The framing stays isometric the whole time (fixed camera angle). Scroll does
- * NOT orbit — it zooms/pans and drives an EXPLODED-VIEW assembly: the layers
- * begin lifted apart in the hero, then settle down onto the deck one at a time
- * as you move through the sections, ending as a finished, sealed roof.
+ * The roof starts OPEN (bare deck grid / joists). As you scroll, the roof is
+ * progressively COVERED — a red membrane floods across the ENTIRE roof plane
+ * panel by panel, following an install front, until the whole building is
+ * sealed with edge metal, rooftop HVAC and drains, and a warm red glow.
  *
  * Scroll progress lives in a mutable ref (never state). Six chapters, one per
- * section. useFrame smoothsteps between chapters and damps toward targets.
- * ------------------------------------------------------------------------- */
+ * section, steer the camera + which roof furniture reveals; roof coverage is a
+ * continuous 0..1 across the whole scroll. useFrame smoothsteps between
+ * chapters and damps toward targets.
+ * ---------------------------------------------------------------------- */
 
 const BG = "#0E0E10";
 const ACCENT = new THREE.Color("#C8262B"); // red membrane
+const ACCENT_DARK = new THREE.Color("#7E1418");
 const LINE = "#F4F2EE"; // blueprint edge line
-const STEEL = new THREE.Color("#3A3A42"); // steel deck
-const INSUL = new THREE.Color("#6E6E4A"); // polyiso insulation (muted)
-const COVER = new THREE.Color("#8C8C6E"); // cover board
-const METAL = new THREE.Color("#9AA0A6"); // edge metal / parapet
+const DECK_COL = new THREE.Color("#33333A"); // bare steel deck (uncovered)
 
-// Building footprint (world units) — long, low commercial box.
-const BW = 16; // width  (x) long axis
-const BD = 10; // depth  (z)
-const BH = 3.2; // wall height (y)
-const ROOF_Y = BH; // top of walls = roof plane
+// Isometric camera direction (kept fixed; scroll only moves distance + pan).
+const ISO = new THREE.Vector3(1, 0.8, 1).normalize();
 
-// Structural bay grid.
-const BAYS_X = 5;
-const BAYS_Z = 3;
+// ---- Warehouse wing (main long volume) ----
+const WW = 20; // width  (x, long axis)
+const WD = 11; // depth  (z)
+const WH = 3.2; // wall height (y)
 
-// Roof joists span the depth, spaced along the length.
-const JOISTS = 12;
+// ---- Office / entry block (taller, narrower, front-left corner) ----
+const OW = 6; // width  (x)
+const OD = 5.5; // depth (z)
+const OH = 5.0; // height (y) — taller than the warehouse
+// office sits at the -x end, pushed toward the +z (front) side
+const OX = -WW / 2 + OW / 2;
+const OZ = WD / 2 - OD / 2;
 
-// The roof-layer stack sits at the roof plane. Each layer has a "seated"
-// height; in the exploded state they lift by these extra offsets.
-const T_DECK = 0.1;
-const T_INSUL = 0.16;
-const T_COVER = 0.08;
-const T_MEMB = 0.05;
+// Roof panel grid over the WAREHOUSE roof plane (this is the star mechanic).
+const RC = 12; // columns along x
+const RR = 6; //  rows along z
+// Roof panel grid over the OFFICE roof (smaller).
+const ORC = 3;
+const ORR = 3;
 
-const Y_DECK = ROOF_Y + 0.12;
-const Y_INSUL = Y_DECK + T_DECK / 2 + T_INSUL / 2;
-const Y_COVER = Y_INSUL + T_INSUL / 2 + T_COVER / 2;
-const Y_MEMB = Y_COVER + T_COVER / 2 + T_MEMB / 2;
-
-// Exploded lift amounts (how high each layer floats before it settles).
-const EX_DECK = 1.6;
-const EX_INSUL = 3.0;
-const EX_COVER = 4.2;
-const EX_MEMB = 5.6;
-
-// The cutaway: the roof layers only cover this fraction of the footprint on
-// the +x / +z corner is peeled OPEN so you can see down into the structure.
-const CUT = 0.62; // covered fraction of the roof (rest is the open cutaway)
-
-// Isometric camera angle. We keep this fixed and only move distance/pan.
-const ISO = new THREE.Vector3(1, 0.82, 1).normalize();
+type PanelDef = {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  order: number; // 0..1 install order (sweep across the whole roof)
+  office: boolean;
+};
 
 type ChapterState = {
   dist: number; // camera distance along the iso vector
-  panX: number; // look-target x pan
-  panY: number; // look-target y pan
-  // per-layer settle 0..1 (0 = fully exploded/hidden, 1 = seated)
-  deck: number;
-  insul: number;
-  cover: number;
-  memb: number;
-  edge: number;
+  panX: number; // look-target x
+  panY: number; // look-target y
+  cov: number; // roof coverage 0..1 (fraction of panels installed)
+  furniture: number; // rooftop HVAC/drains reveal 0..1
+  edge: number; // perimeter edge-metal / parapet caps 0..1
   lineDraw: number; // blueprint construction-line intensity (fades as built)
-  glow: number; // warm red glow behind finished roof
+  glow: number; // warm red glow behind the finished roof
 };
 
 // Chapter map — order matches the page sections:
 // 0 HERO, 1 SYSTEMS, 2 VERTICALS, 3 APPROACH, 4 COVERAGE, 5 CONTACT
 const CHAPTERS: ChapterState[] = [
   {
-    // HERO — wide isometric establishing shot. Full layer stack floats above
-    // the open structure, exploded and fanned out; construction lines drawing.
-    dist: 30,
+    // HERO — wide iso establishing shot. Full building outline, roof OPEN
+    // (bare deck grid + joists), construction lines drawing, install front parked.
+    dist: 32,
     panX: 0,
-    panY: 2.4,
-    deck: 0,
-    insul: 0,
-    cover: 0,
-    memb: 0,
+    panY: 2.2,
+    cov: 0.04,
+    furniture: 0,
     edge: 0,
     lineDraw: 1,
     glow: 0,
   },
   {
-    // SYSTEMS — push in toward the cutaway corner; STEEL DECK descends and
-    // seats onto the joists first.
-    dist: 22,
-    panX: 1.2,
-    panY: 2.0,
-    deck: 1,
-    insul: 0,
-    cover: 0,
-    memb: 0,
+    // SYSTEMS — push toward the warehouse roof; the red membrane starts
+    // flooding across from the office end.
+    dist: 24,
+    panX: -1.5,
+    panY: 2.6,
+    cov: 0.34,
+    furniture: 0,
     edge: 0,
     lineDraw: 0.8,
-    glow: 0,
+    glow: 0.15,
   },
   {
-    // VERTICALS — hold the iso cutaway; INSULATION boards, then COVER BOARD
-    // settle down onto the deck.
-    dist: 21,
-    panX: 1.0,
-    panY: 2.2,
-    deck: 1,
-    insul: 1,
-    cover: 1,
-    memb: 0,
+    // VERTICALS — pull back a touch; coverage keeps sweeping across the field,
+    // office-block roof begins covering too.
+    dist: 27,
+    panX: 0.5,
+    panY: 2.6,
+    cov: 0.6,
+    furniture: 0.1,
     edge: 0,
     lineDraw: 0.55,
-    glow: 0.1,
+    glow: 0.25,
   },
   {
-    // APPROACH — the RED MEMBRANE lowers and seals across the assembly. The
-    // accent moment.
-    dist: 20,
-    panX: 0.6,
-    panY: 2.4,
-    deck: 1,
-    insul: 1,
-    cover: 1,
-    memb: 1,
-    edge: 0,
+    // APPROACH — low tracking along the install front as the membrane keeps
+    // laying across the roof. The accent-red moment.
+    dist: 22,
+    panX: 2.0,
+    panY: 2.3,
+    cov: 0.82,
+    furniture: 0.35,
+    edge: 0.2,
     lineDraw: 0.35,
-    glow: 0.55,
+    glow: 0.5,
   },
   {
-    // COVERAGE — pull back to the widest iso; perimeter EDGE METAL / parapet
-    // caps snap on and the building reads sealed and complete.
-    dist: 30,
+    // COVERAGE — pull to the widest iso; the LAST panels close, perimeter edge
+    // metal / parapet caps snap on, rooftop units + drains appear.
+    dist: 31,
     panX: 0,
-    panY: 2.2,
-    deck: 1,
-    insul: 1,
-    cover: 1,
-    memb: 1,
+    panY: 2.5,
+    cov: 1,
+    furniture: 1,
     edge: 1,
     lineDraw: 0.12,
     glow: 0.6,
   },
   {
-    // CONTACT — calm framing on the finished isometric building, warm red glow
-    // rising off the sealed roof.
-    dist: 24,
+    // CONTACT — calm framing on the finished, fully-roofed building; warm red
+    // glow rising off the sealed roof.
+    dist: 25,
     panX: 0.2,
-    panY: 2.2,
-    deck: 1,
-    insul: 1,
-    cover: 1,
-    memb: 1,
+    panY: 2.4,
+    cov: 1,
+    furniture: 1,
     edge: 1,
     lineDraw: 0,
-    glow: 0.9,
+    glow: 0.95,
   },
 ];
 
@@ -179,7 +158,7 @@ const lerp = THREE.MathUtils.lerp;
 
 type ProgressRef = { current: number };
 
-function IsoCutaway({
+function BlueprintBuild({
   progressRef,
   reduced,
 }: {
@@ -188,116 +167,108 @@ function IsoCutaway({
 }) {
   const { camera } = useThree();
   const buildingRef = useRef<THREE.Group>(null);
-  const deckRef = useRef<THREE.Group>(null);
-  const insulRef = useRef<THREE.InstancedMesh>(null);
-  const coverRef = useRef<THREE.Group>(null);
-  const membRef = useRef<THREE.Mesh>(null);
+  const wePanelsRef = useRef<THREE.InstancedMesh>(null);
+  const deckPanelsRef = useRef<THREE.InstancedMesh>(null);
   const membMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const frontRef = useRef<THREE.Mesh>(null);
+  const frontMatRef = useRef<THREE.MeshBasicMaterial>(null);
   const edgeGroupRef = useRef<THREE.Group>(null);
+  const furnitureRef = useRef<THREE.Group>(null);
   const glowRef = useRef<THREE.PointLight>(null);
   const guideRef = useRef<THREE.Group>(null);
-  const wallMatRef = useRef<THREE.MeshStandardMaterial>(null);
 
   const camTarget = useRef(new THREE.Vector3(0, 2.2, 0));
   const dummy = useMemo(() => new THREE.Object3D(), []);
+  const tmpColor = useMemo(() => new THREE.Color(), []);
 
-  // Covered roof area (the cutaway leaves the far +x/+z corner open).
-  const roofW = BW * CUT;
-  const roofD = BD * CUT;
-  // Centered so the OPEN corner is on +x / +z (nearest the camera iso corner).
-  const roofCX = -BW / 2 + roofW / 2;
-  const roofCZ = -BD / 2 + roofD / 2;
+  const WROOF_Y = WH; // warehouse roof plane
+  const OROOF_Y = OH; // office roof plane
 
-  // ---- Structural columns on the bay grid ----
-  const columns = useMemo(() => {
-    const arr: [number, number][] = [];
-    const stepX = BW / BAYS_X;
-    const stepZ = BD / BAYS_Z;
-    for (let c = 0; c <= BAYS_X; c++) {
-      for (let r = 0; r <= BAYS_Z; r++) {
-        arr.push([-BW / 2 + stepX * c, -BD / 2 + stepZ * r]);
+  // ---- Build the ordered list of roof panels (warehouse + office) ----
+  // Install order sweeps across x (office end -> far end); a small z bias makes
+  // the front look organic rather than a hard vertical line.
+  const panels = useMemo(() => {
+    const arr: PanelDef[] = [];
+    const wcell = WW / RC;
+    const dcell = WD / RR;
+    for (let c = 0; c < RC; c++) {
+      for (let r = 0; r < RR; r++) {
+        const x = -WW / 2 + wcell * (c + 0.5);
+        const z = -WD / 2 + dcell * (r + 0.5);
+        // sweep left(-x) to right(+x); slight per-row offset
+        const order = (c + (r / RR) * 0.55) / (RC + 0.55);
+        arr.push({ x, z, w: wcell * 0.94, d: dcell * 0.94, order, office: false });
+      }
+    }
+    const owcell = OW / ORC;
+    const odcell = OD / ORR;
+    for (let c = 0; c < ORC; c++) {
+      for (let r = 0; r < ORR; r++) {
+        const x = OX - OW / 2 + owcell * (c + 0.5);
+        const z = OZ - OD / 2 + odcell * (r + 0.5);
+        // office roof covers early (it's at the start of the sweep)
+        const order = 0.02 + (c + r * 0.4) / (ORC * 6);
+        arr.push({ x, z, w: owcell * 0.94, d: odcell * 0.94, order, office: true });
       }
     }
     return arr;
   }, []);
 
-  // ---- Top edge beams (roof-plate grid) ----
-  const beams = useMemo(() => {
-    const arr: { pos: [number, number, number]; size: [number, number, number] }[] =
-      [];
-    const stepX = BW / BAYS_X;
-    const stepZ = BD / BAYS_Z;
-    for (let r = 0; r <= BAYS_Z; r++) {
-      arr.push({
-        pos: [0, ROOF_Y, -BD / 2 + stepZ * r],
-        size: [BW, 0.16, 0.14],
-      });
-    }
-    for (let c = 0; c <= BAYS_X; c++) {
-      arr.push({
-        pos: [-BW / 2 + stepX * c, ROOF_Y, 0],
-        size: [0.14, 0.16, BD],
-      });
+  const TOTAL = panels.length;
+
+  // ---- Structural columns on the warehouse bay grid ----
+  const columns = useMemo(() => {
+    const arr: [number, number][] = [];
+    const bx = 5;
+    const bz = 3;
+    for (let c = 0; c <= bx; c++) {
+      for (let r = 0; r <= bz; r++) {
+        arr.push([-WW / 2 + (WW / bx) * c, -WD / 2 + (WD / bz) * r]);
+      }
     }
     return arr;
   }, []);
+
+  // ---- Top edge/interior beams forming the roof plate ----
+  const beams = useMemo(() => {
+    const arr: { pos: [number, number, number]; size: [number, number, number] }[] = [];
+    const bx = 5;
+    const bz = 3;
+    for (let r = 0; r <= bz; r++) {
+      arr.push({ pos: [0, WROOF_Y, -WD / 2 + (WD / bz) * r], size: [WW, 0.16, 0.14] });
+    }
+    for (let c = 0; c <= bx; c++) {
+      arr.push({ pos: [-WW / 2 + (WW / bx) * c, WROOF_Y, 0], size: [0.14, 0.16, WD] });
+    }
+    return arr;
+  }, [WROOF_Y]);
 
   // ---- Open roof joists spanning the depth ----
   const joists = useMemo(() => {
     const arr: number[] = [];
-    for (let j = 0; j < JOISTS; j++) {
-      arr.push(-BW / 2 + (BW / (JOISTS - 1)) * j);
-    }
+    const n = 15;
+    for (let j = 0; j < n; j++) arr.push(-WW / 2 + (WW / (n - 1)) * j);
     return arr;
   }, []);
 
-  // ---- Loading-dock bay openings along the front (+z) wall ----
-  const dockBays = useMemo(() => {
+  // ---- Loading-dock bay openings on the front (+z) warehouse wall ----
+  const docks = useMemo(() => {
     const arr: number[] = [];
-    const n = 4;
-    const span = BW * 0.6;
-    for (let i = 0; i < n; i++) arr.push(-span / 2 + (span / (n - 1)) * i);
+    const n = 5;
+    const span = WW * 0.55;
+    const start = WW * 0.02; // shift toward +x, away from the office block
+    for (let i = 0; i < n; i++) arr.push(start - span / 2 + (span / (n - 1)) * i);
     return arr;
   }, []);
 
-  // ---- Deck panels (corrugated planks running across the depth) ----
-  const deckPlanks = useMemo(() => {
-    const arr: { x: number; w: number; seed: number }[] = [];
-    const cols = 8;
-    const w = roofW / cols;
-    for (let c = 0; c < cols; c++) {
-      arr.push({
-        x: roofCX - roofW / 2 + w * (c + 0.5),
-        w: w * 0.9,
-        seed: c / cols,
-      });
-    }
-    return arr;
-  }, [roofW, roofCX]);
-
-  // ---- Insulation board tile layout ----
-  const insulBoards = useMemo(() => {
-    const arr: { x: number; z: number; w: number; d: number; seed: number }[] =
-      [];
-    const cols = 6;
-    const rows = 3;
-    const w = roofW / cols;
-    const dd = roofD / rows;
-    let n = 0;
-    for (let c = 0; c < cols; c++) {
-      for (let r = 0; r < rows; r++) {
-        arr.push({
-          x: roofCX - roofW / 2 + w * (c + 0.5),
-          z: roofCZ - roofD / 2 + dd * (r + 0.5),
-          w: w * 0.93,
-          d: dd * 0.93,
-          seed: n / (cols * rows),
-        });
-        n++;
-      }
-    }
-    return arr;
-  }, [roofW, roofD, roofCX, roofCZ]);
+  // ---- Office curtain-wall mullion lines (front + side faces) ----
+  const mullions = useMemo(() => {
+    const v: number[] = [];
+    for (let i = 1; i < 5; i++) v.push(OX - OW / 2 + (OW / 5) * i);
+    const h: number[] = [];
+    for (let i = 1; i < 5; i++) h.push((OH / 5) * i);
+    return { v, h };
+  }, []);
 
   useFrame((st, delta) => {
     const d = Math.min(delta, 0.05);
@@ -315,37 +286,30 @@ function IsoCutaway({
     const dist = lerp(A.dist, B.dist, local);
     const panX = lerp(A.panX, B.panX, local);
     const panY = lerp(A.panY, B.panY, local);
-    const deck = lerp(A.deck, B.deck, local);
-    const insul = lerp(A.insul, B.insul, local);
-    const cover = lerp(A.cover, B.cover, local);
-    const memb = lerp(A.memb, B.memb, local);
+    const cov = lerp(A.cov, B.cov, local);
+    const furniture = lerp(A.furniture, B.furniture, local);
     const edge = lerp(A.edge, B.edge, local);
     const lineDraw = lerp(A.lineDraw, B.lineDraw, local);
     const glow = lerp(A.glow, B.glow, local);
 
     // ---- ISOMETRIC camera: fixed angle, damp distance + pan only ----
-    const damp = reduced ? 12 : 3.4;
-    const tx = ISO.x * dist;
-    const ty = ISO.y * dist;
-    const tz = ISO.z * dist;
-    camera.position.x = THREE.MathUtils.damp(camera.position.x, tx, damp, d);
-    camera.position.y = THREE.MathUtils.damp(camera.position.y, ty, damp, d);
-    camera.position.z = THREE.MathUtils.damp(camera.position.z, tz, damp, d);
-
+    const damp = reduced ? 12 : 3.6;
+    camera.position.x = THREE.MathUtils.damp(camera.position.x, ISO.x * dist, damp, d);
+    camera.position.y = THREE.MathUtils.damp(camera.position.y, ISO.y * dist, damp, d);
+    camera.position.z = THREE.MathUtils.damp(camera.position.z, ISO.z * dist, damp, d);
     camTarget.current.x = THREE.MathUtils.damp(camTarget.current.x, panX, damp, d);
     camTarget.current.y = THREE.MathUtils.damp(camTarget.current.y, panY, damp, d);
     camTarget.current.z = THREE.MathUtils.damp(camTarget.current.z, 0, damp, d);
 
-    // gentle idle float on the iso angle (parallax feel without breaking iso)
     if (!reduced) {
-      camera.position.x += Math.sin(t * 0.14) * 0.25;
-      camera.position.y += Math.cos(t * 0.11) * 0.14;
+      camera.position.x += Math.sin(t * 0.13) * 0.22;
+      camera.position.y += Math.cos(t * 0.1) * 0.13;
     }
     camera.lookAt(camTarget.current);
 
-    // building idle micro-rotation
+    // idle micro-rotation
     if (buildingRef.current) {
-      const idle = reduced ? 0 : Math.sin(t * 0.06) * 0.05;
+      const idle = reduced ? 0 : Math.sin(t * 0.06) * 0.045;
       buildingRef.current.rotation.y = THREE.MathUtils.damp(
         buildingRef.current.rotation.y,
         idle,
@@ -354,121 +318,117 @@ function IsoCutaway({
       );
     }
 
-    // ---- blueprint construction guide lines fade as build completes ----
-    if (guideRef.current) {
-      guideRef.current.visible = lineDraw > 0.02;
-      const flick = reduced ? 1 : 0.75 + 0.25 * Math.sin(t * 1.4);
-      guideRef.current.children.forEach((c) => {
-        const m = (c as THREE.LineSegments).material as THREE.LineBasicMaterial;
-        if (m) m.opacity = lineDraw * 0.5 * flick;
-      });
-    }
+    // ---- COVERAGE: red membrane panels flood across the whole roof ----
+    // Each panel installs when coverage passes its order threshold; a soft band
+    // (feather) animates the panel rising + fading in as the front reaches it.
+    const feather = 0.06;
+    const memb = wePanelsRef.current;
+    const bareDeck = deckPanelsRef.current;
+    if (memb && bareDeck) {
+      for (let k = 0; k < TOTAL; k++) {
+        const pn = panels[k];
+        const a = ss((cov - pn.order) / feather);
+        const roofY = pn.office ? OROOF_Y : WROOF_Y;
 
-    // wall fill brightens slightly as it "becomes real"
-    if (wallMatRef.current) {
-      wallMatRef.current.opacity = 0.1 + (1 - lineDraw) * 0.12;
-    }
-
-    // ---- DECK: planks descend from exploded height and seat, staggered ----
-    if (deckRef.current) {
-      deckRef.current.children.forEach((child, k) => {
-        const pl = deckPlanks[k];
-        if (!pl) return;
-        const a = clamp01((deck - pl.seed * 0.3) / 0.7);
-        const e = ss(a);
-        child.visible = deck > 0.001;
-        child.position.y = Y_DECK + (1 - e) * EX_DECK;
-        const m = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
-        if (m) m.opacity = 0.55 + e * 0.45;
-      });
-    }
-
-    // ---- INSULATION: boards lower and tile in ----
-    const insulMesh = insulRef.current;
-    if (insulMesh) {
-      for (let k = 0; k < insulBoards.length; k++) {
-        const b = insulBoards[k];
-        const a = clamp01((insul - b.seed * 0.4) / 0.6);
-        const e = ss(a);
-        const y = Y_INSUL + (1 - e) * EX_INSUL;
-        const sc = e < 0.001 ? 0.0001 : 1;
-        dummy.position.set(b.x, y, b.z);
-        dummy.scale.set(b.w * sc, T_INSUL, b.d * sc);
+        // installed red membrane panel: drops the last bit into place + fades in
+        const my = roofY + 0.14 + (1 - a) * 0.9;
+        dummy.position.set(pn.x, my, pn.z);
+        const msc = a < 0.001 ? 0.0001 : 1;
+        dummy.scale.set(pn.w * msc, 0.06, pn.d * msc);
         dummy.updateMatrix();
-        insulMesh.setMatrixAt(k, dummy.matrix);
+        memb.setMatrixAt(k, dummy.matrix);
+        // color: warm red, slightly darker for office block for depth
+        tmpColor.copy(pn.office ? ACCENT_DARK : ACCENT).lerp(ACCENT, a * 0.4);
+        memb.setColorAt(k, tmpColor);
+
+        // bare steel deck patch shows until this panel is covered (1 - a)
+        const bshow = 1 - a;
+        dummy.position.set(pn.x, roofY + 0.08, pn.z);
+        const bsc = bshow < 0.02 ? 0.0001 : 1;
+        dummy.scale.set(pn.w * bsc, 0.05, pn.d * bsc);
+        dummy.updateMatrix();
+        bareDeck.setMatrixAt(k, dummy.matrix);
       }
-      insulMesh.instanceMatrix.needsUpdate = true;
-      insulMesh.visible = insul > 0.001;
+      memb.instanceMatrix.needsUpdate = true;
+      if (memb.instanceColor) memb.instanceColor.needsUpdate = true;
+      bareDeck.instanceMatrix.needsUpdate = true;
+    }
+    if (membMatRef.current) {
+      membMatRef.current.emissiveIntensity = 0.28 + glow * 0.9;
     }
 
-    // ---- COVER BOARD: single slab lowers over insulation ----
-    if (coverRef.current) {
-      const e = ss(cover);
-      coverRef.current.visible = cover > 0.001;
-      coverRef.current.position.y = Y_COVER + (1 - e) * EX_COVER;
-      const m = (coverRef.current.children[0] as THREE.Mesh)
-        ?.material as THREE.MeshStandardMaterial;
-      if (m) m.opacity = 0.5 + e * 0.45;
+    // ---- the glowing "install front" line that sweeps across the roof ----
+    if (frontRef.current && frontMatRef.current) {
+      const active = cov > 0.02 && cov < 0.99;
+      frontRef.current.visible = active;
+      // front x-position follows coverage across the warehouse width
+      const fx = -WW / 2 + cov * WW;
+      frontRef.current.position.set(fx, WROOF_Y + 0.2, 0);
+      const pulse = reduced ? 1 : 0.7 + 0.3 * Math.sin(t * 3);
+      frontMatRef.current.opacity = active ? 0.85 * pulse : 0;
     }
 
-    // ---- MEMBRANE: red sheet lowers then unrolls across (scale x) ----
-    if (membRef.current && membMatRef.current) {
-      const e = ss(memb);
-      membRef.current.visible = memb > 0.001;
-      // lower into place over first half, unroll across second half
-      const lowering = clamp01(e / 0.45);
-      const rolling = clamp01((e - 0.45) / 0.55);
-      membRef.current.position.y = Y_MEMB + (1 - ss(lowering)) * EX_MEMB;
-      const roll = Math.max(0.0001, ss(rolling));
-      membRef.current.scale.x = roll;
-      membRef.current.position.x = roofCX - (roofW / 2) * (1 - roll);
-      membMatRef.current.emissiveIntensity = 0.25 + glow * 0.9;
-      membMatRef.current.opacity = 0.4 + e * 0.55;
-    }
-
-    // ---- EDGE METAL: perimeter parapet caps snap on ----
+    // ---- perimeter edge metal / parapet caps snap on ----
     if (edgeGroupRef.current) {
       const e = ss(edge);
       edgeGroupRef.current.visible = e > 0.01;
       const s = e < 0.001 ? 0.0001 : e;
       edgeGroupRef.current.scale.set(1, s, 1);
-      edgeGroupRef.current.position.y = (1 - e) * 1.2;
+      edgeGroupRef.current.position.y = (1 - e) * 1.0;
     }
 
-    // ---- warm red glow from the sealed roof ----
+    // ---- rooftop HVAC units + drains appear as the roof completes ----
+    if (furnitureRef.current) {
+      const f = ss(furniture);
+      furnitureRef.current.visible = f > 0.01;
+      furnitureRef.current.children.forEach((child, idx) => {
+        const local2 = clamp01((f - (idx % 5) * 0.08) / 0.5);
+        const e = ss(local2);
+        child.scale.setScalar(e < 0.001 ? 0.0001 : e);
+      });
+    }
+
+    // ---- construction guide lines fade as the build completes ----
+    if (guideRef.current) {
+      guideRef.current.visible = lineDraw > 0.02;
+      const flick = reduced ? 1 : 0.75 + 0.25 * Math.sin(t * 1.4);
+      guideRef.current.children.forEach((c) => {
+        const m = (c as THREE.LineSegments).material as THREE.LineBasicMaterial;
+        if (m) m.opacity = lineDraw * 0.45 * flick;
+      });
+    }
+
+    // ---- warm red glow rising off the sealed roof ----
     if (glowRef.current) {
       const pulse = reduced ? 1 : 0.85 + 0.15 * Math.sin(t * 0.7);
-      glowRef.current.intensity = glow * 26 * pulse;
+      glowRef.current.intensity = glow * 30 * pulse;
     }
   });
 
   return (
     <group>
       {/* faint blueprint ground grid */}
-      <gridHelper
-        args={[80, 80, "#1c1c22", "#141418"]}
-        position={[0, -0.001, 0]}
-      />
+      <gridHelper args={[90, 90, "#1c1c22", "#141418"]} position={[0, -0.001, 0]} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
-        <planeGeometry args={[120, 120]} />
+        <planeGeometry args={[140, 140]} />
         <meshStandardMaterial color={BG} roughness={1} metalness={0} />
       </mesh>
 
       <group ref={buildingRef}>
-        {/* ---- translucent wall skin (open top so roof is clearly the focus) ---- */}
+        {/* ============ WAREHOUSE WING (long low volume) ============ */}
+        {/* translucent walls (open top so the roof is the focus) */}
         {[
-          { pos: [0, BH / 2, BD / 2], size: [BW, BH, 0.05] },
-          { pos: [0, BH / 2, -BD / 2], size: [BW, BH, 0.05] },
-          { pos: [BW / 2, BH / 2, 0], size: [0.05, BH, BD] },
-          { pos: [-BW / 2, BH / 2, 0], size: [0.05, BH, BD] },
+          { pos: [0, WH / 2, WD / 2], size: [WW, WH, 0.05] },
+          { pos: [0, WH / 2, -WD / 2], size: [WW, WH, 0.05] },
+          { pos: [WW / 2, WH / 2, 0], size: [0.05, WH, WD] },
+          { pos: [-WW / 2, WH / 2, 0], size: [0.05, WH, WD] },
         ].map((w, i) => (
-          <mesh key={`wall${i}`} position={w.pos as [number, number, number]}>
+          <mesh key={`ww${i}`} position={w.pos as [number, number, number]}>
             <boxGeometry args={w.size as [number, number, number]} />
             <meshStandardMaterial
-              ref={i === 0 ? wallMatRef : undefined}
               color="#1F1F23"
               transparent
-              opacity={0.11}
+              opacity={0.1}
               roughness={0.9}
               metalness={0.05}
             />
@@ -476,16 +436,16 @@ function IsoCutaway({
           </mesh>
         ))}
 
-        {/* ---- structural steel columns on the bay grid ---- */}
+        {/* structural steel columns on the bay grid */}
         {columns.map((p, i) => (
-          <mesh key={`col${i}`} position={[p[0], BH / 2, p[1]]}>
-            <boxGeometry args={[0.12, BH, 0.12]} />
+          <mesh key={`col${i}`} position={[p[0], WH / 2, p[1]]}>
+            <boxGeometry args={[0.12, WH, 0.12]} />
             <meshStandardMaterial color="#26262c" roughness={0.7} metalness={0.35} />
             <Edges threshold={12} color={LINE} />
           </mesh>
         ))}
 
-        {/* ---- edge / interior top beams (roof-plate grid) ---- */}
+        {/* roof-plate beams */}
         {beams.map((b, i) => (
           <mesh key={`beam${i}`} position={b.pos}>
             <boxGeometry args={b.size} />
@@ -494,46 +454,87 @@ function IsoCutaway({
           </mesh>
         ))}
 
-        {/* ---- open roof joists spanning the depth ---- */}
+        {/* open roof joists spanning the depth */}
         {joists.map((x, i) => (
-          <mesh key={`joist${i}`} position={[x, ROOF_Y - 0.06, 0]}>
-            <boxGeometry args={[0.05, 0.16, BD * 0.98]} />
+          <mesh key={`joist${i}`} position={[x, WROOF_Y - 0.06, 0]}>
+            <boxGeometry args={[0.05, 0.14, WD * 0.98]} />
             <meshStandardMaterial color="#33333a" roughness={0.6} metalness={0.45} />
           </mesh>
         ))}
 
-        {/* ---- loading-dock bay openings on the front wall ---- */}
-        {dockBays.map((x, i) => (
-          <mesh key={`dock${i}`} position={[x, 0.9, BD / 2 + 0.03]}>
-            <boxGeometry args={[1.4, 1.8, 0.06]} />
+        {/* loading-dock bay openings on the front wall */}
+        {docks.map((x, i) => (
+          <mesh key={`dock${i}`} position={[x, 0.95, WD / 2 + 0.03]}>
+            <boxGeometry args={[1.5, 1.9, 0.06]} />
             <meshStandardMaterial color="#0E0E10" transparent opacity={0.85} roughness={1} />
             <Edges threshold={12} color={LINE} />
           </mesh>
         ))}
 
-        {/* ---- entrance canopy at one end ---- */}
-        <mesh position={[-BW / 2 - 0.6, 2.0, 0]}>
-          <boxGeometry args={[1.2, 0.08, 3]} />
-          <meshStandardMaterial color="#26262c" roughness={0.7} metalness={0.35} />
-          <Edges threshold={12} color={LINE} />
-        </mesh>
+        {/* ============ OFFICE / ENTRY BLOCK (taller, front-left) ============ */}
+        <group>
+          {/* solid-ish translucent volume */}
+          {[
+            { pos: [OX, OH / 2, OZ + OD / 2], size: [OW, OH, 0.05] },
+            { pos: [OX, OH / 2, OZ - OD / 2], size: [OW, OH, 0.05] },
+            { pos: [OX + OW / 2, OH / 2, OZ], size: [0.05, OH, OD] },
+            { pos: [OX - OW / 2, OH / 2, OZ], size: [0.05, OH, OD] },
+          ].map((w, i) => (
+            <mesh key={`ow${i}`} position={w.pos as [number, number, number]}>
+              <boxGeometry args={w.size as [number, number, number]} />
+              <meshStandardMaterial
+                color="#22222a"
+                transparent
+                opacity={0.16}
+                roughness={0.85}
+                metalness={0.1}
+              />
+              <Edges threshold={12} color={LINE} />
+            </mesh>
+          ))}
 
-        {/* ---- construction guide lines (fade as build completes) ---- */}
+          {/* curtain-wall mullions on the front (+z) face */}
+          {mullions.v.map((x, i) => (
+            <mesh key={`mv${i}`} position={[x, OH / 2, OZ + OD / 2 + 0.03]}>
+              <boxGeometry args={[0.04, OH, 0.02]} />
+              <meshStandardMaterial color={LINE} transparent opacity={0.55} />
+            </mesh>
+          ))}
+          {mullions.h.map((y, i) => (
+            <mesh key={`mh${i}`} position={[OX, y, OZ + OD / 2 + 0.03]}>
+              <boxGeometry args={[OW, 0.04, 0.02]} />
+              <meshStandardMaterial color={LINE} transparent opacity={0.55} />
+            </mesh>
+          ))}
+
+          {/* entrance canopy off the office front */}
+          <mesh position={[OX, 2.2, OZ + OD / 2 + 0.7]}>
+            <boxGeometry args={[OW * 0.7, 0.08, 1.4]} />
+            <meshStandardMaterial color="#26262c" roughness={0.7} metalness={0.35} />
+            <Edges threshold={12} color={LINE} />
+          </mesh>
+          {/* stepped parapet cap on the office roof */}
+          <mesh position={[OX, OH + 0.12, OZ]}>
+            <boxGeometry args={[OW + 0.1, 0.22, OD + 0.1]} />
+            <meshStandardMaterial color="#2b2b32" transparent opacity={0.4} roughness={0.6} />
+            <Edges threshold={12} color={LINE} />
+          </mesh>
+        </group>
+
+        {/* construction guide lines (fade as build completes) */}
         <group ref={guideRef}>
-          {/* full roof-plane outline drawn as a thin frame */}
-          <lineSegments position={[0, ROOF_Y + 0.02, 0]}>
-            <edgesGeometry args={[new THREE.BoxGeometry(BW, 0.01, BD)]} />
+          <lineSegments position={[0, WROOF_Y + 0.02, 0]}>
+            <edgesGeometry args={[new THREE.BoxGeometry(WW, 0.01, WD)]} />
             <lineBasicMaterial color={LINE} transparent opacity={0.4} />
           </lineSegments>
-          {/* red survey diagonals across the open roof */}
-          <lineSegments position={[0, ROOF_Y + 0.03, 0]}>
+          <lineSegments position={[0, WROOF_Y + 0.03, 0]}>
             <bufferGeometry>
               <bufferAttribute
                 attach="attributes-position"
                 array={
                   new Float32Array([
-                    -BW / 2, 0, -BD / 2, BW / 2, 0, BD / 2,
-                    -BW / 2, 0, BD / 2, BW / 2, 0, -BD / 2,
+                    -WW / 2, 0, -WD / 2, WW / 2, 0, WD / 2,
+                    -WW / 2, 0, WD / 2, WW / 2, 0, -WD / 2,
                   ])
                 }
                 count={4}
@@ -544,91 +545,82 @@ function IsoCutaway({
           </lineSegments>
         </group>
 
-        {/* ============================================================
-            EXPOSED ROOF ASSEMBLY — sits on the covered corner; the rest of
-            the roof plane stays OPEN (the cutaway). Layers explode/settle.
-            ============================================================ */}
-
-        {/* ---- LAYER 1: steel deck planks ---- */}
-        <group ref={deckRef}>
-          {deckPlanks.map((pl, i) => (
-            <mesh key={`deck${i}`} position={[pl.x, Y_DECK, roofCZ]} visible={false}>
-              <boxGeometry args={[pl.w, T_DECK, roofD * 0.98]} />
-              <meshStandardMaterial
-                color={STEEL}
-                roughness={0.5}
-                metalness={0.6}
-                transparent
-                opacity={1}
-              />
-              <Edges threshold={14} color={LINE} />
-            </mesh>
-          ))}
-        </group>
-
-        {/* ---- LAYER 2: insulation boards (instanced) ---- */}
+        {/* ============ ROOF COVERAGE — the star mechanic ============ */}
+        {/* bare steel-deck patches (show until each panel is covered) */}
         <instancedMesh
-          ref={insulRef}
-          args={[undefined, undefined, insulBoards.length]}
-          visible={false}
+          ref={deckPanelsRef}
+          args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, TOTAL]}
         >
           <boxGeometry args={[1, 1, 1]} />
-          <meshStandardMaterial color={INSUL} roughness={0.95} metalness={0} />
+          <meshStandardMaterial color={DECK_COL} roughness={0.6} metalness={0.55} />
         </instancedMesh>
 
-        {/* ---- LAYER 3: cover board (single slab) ---- */}
-        <group ref={coverRef} visible={false}>
-          <mesh position={[roofCX, Y_COVER, roofCZ]}>
-            <boxGeometry args={[roofW * 0.99, T_COVER, roofD * 0.99]} />
-            <meshStandardMaterial
-              color={COVER}
-              roughness={0.85}
-              metalness={0.05}
-              transparent
-              opacity={0.9}
-            />
-            <Edges threshold={14} color={LINE} />
-          </mesh>
-        </group>
-
-        {/* ---- LAYER 4: red membrane (lowers, then unrolls across) ---- */}
-        <mesh ref={membRef} position={[roofCX, Y_MEMB, roofCZ]} visible={false}>
-          <boxGeometry args={[roofW * 0.99, T_MEMB, roofD * 0.99]} />
+        {/* red membrane panels (flood across the roof as you scroll) */}
+        <instancedMesh
+          ref={wePanelsRef}
+          args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, TOTAL]}
+        >
+          <boxGeometry args={[1, 1, 1]} />
           <meshStandardMaterial
             ref={membMatRef}
             color={ACCENT}
             emissive={ACCENT}
-            emissiveIntensity={0.4}
-            transparent
-            opacity={0.9}
+            emissiveIntensity={0.3}
             roughness={0.5}
             metalness={0.1}
           />
+        </instancedMesh>
+
+        {/* glowing install-front line sweeping across the roof */}
+        <mesh ref={frontRef} position={[0, WROOF_Y + 0.2, 0]}>
+          <boxGeometry args={[0.08, 0.1, WD]} />
+          <meshBasicMaterial ref={frontMatRef} color={ACCENT} transparent opacity={0.85} />
         </mesh>
 
-        {/* ---- LAYER 5: perimeter edge metal / parapet caps (snap on) ---- */}
-        <group ref={edgeGroupRef} position={[roofCX, Y_MEMB + T_MEMB / 2 + 0.06, roofCZ]} visible={false}>
+        {/* perimeter edge metal / parapet caps (snap on when sealed) */}
+        <group ref={edgeGroupRef} position={[0, WROOF_Y + 0.22, 0]}>
           {[
-            { pos: [0, 0, roofD / 2], size: [roofW, 0.16, 0.1] },
-            { pos: [0, 0, -roofD / 2], size: [roofW, 0.16, 0.1] },
-            { pos: [roofW / 2, 0, 0], size: [0.1, 0.16, roofD] },
-            { pos: [-roofW / 2, 0, 0], size: [0.1, 0.16, roofD] },
+            { pos: [0, 0, WD / 2], size: [WW, 0.16, 0.1] },
+            { pos: [0, 0, -WD / 2], size: [WW, 0.16, 0.1] },
+            { pos: [WW / 2, 0, 0], size: [0.1, 0.16, WD] },
+            { pos: [-WW / 2, 0, 0], size: [0.1, 0.16, WD] },
           ].map((f, i) => (
             <mesh key={`edge${i}`} position={f.pos as [number, number, number]}>
               <boxGeometry args={f.size as [number, number, number]} />
-              <meshStandardMaterial color={METAL} roughness={0.35} metalness={0.75} />
+              <meshStandardMaterial color="#9AA0A6" roughness={0.35} metalness={0.75} />
               <Edges threshold={12} color={LINE} />
             </mesh>
           ))}
-          {/* rooftop HVAC units on the finished roof — commercial detail */}
+        </group>
+
+        {/* rooftop HVAC units, roof hatch, drains (reveal as roof completes) */}
+        <group ref={furnitureRef}>
           {[
-            [roofCX - roofW * 0.22, 0.28, roofCZ - roofD * 0.12],
-            [roofCX + roofW * 0.05, 0.28, roofCZ + roofD * 0.1],
-            [roofCX + roofW * 0.26, 0.28, roofCZ - roofD * 0.08],
+            [-WW * 0.28, WROOF_Y + 0.42, -WD * 0.14],
+            [-WW * 0.05, WROOF_Y + 0.42, WD * 0.16],
+            [WW * 0.2, WROOF_Y + 0.42, -WD * 0.1],
+            [WW * 0.36, WROOF_Y + 0.42, WD * 0.12],
           ].map((p, i) => (
             <mesh key={`rtu${i}`} position={p as [number, number, number]}>
-              <boxGeometry args={[1.1, 0.5, 0.9]} />
-              <meshStandardMaterial color="#26262c" roughness={0.7} metalness={0.4} />
+              <boxGeometry args={[1.4, 0.55, 1.0]} />
+              <meshStandardMaterial color="#2b2b32" roughness={0.7} metalness={0.4} />
+              <Edges threshold={12} color={LINE} />
+            </mesh>
+          ))}
+          {/* roof hatch */}
+          <mesh position={[WW * 0.08, WROOF_Y + 0.32, -WD * 0.28]}>
+            <boxGeometry args={[0.7, 0.28, 0.7]} />
+            <meshStandardMaterial color="#26262c" roughness={0.7} metalness={0.35} />
+            <Edges threshold={12} color={LINE} />
+          </mesh>
+          {/* roof drains */}
+          {[
+            [-WW * 0.15, WROOF_Y + 0.2, WD * 0.28],
+            [WW * 0.3, WROOF_Y + 0.2, -WD * 0.28],
+          ].map((p, i) => (
+            <mesh key={`drain${i}`} position={p as [number, number, number]}>
+              <cylinderGeometry args={[0.22, 0.22, 0.14, 16]} />
+              <meshStandardMaterial color="#1c1c22" roughness={0.8} metalness={0.3} />
               <Edges threshold={12} color={LINE} />
             </mesh>
           ))}
@@ -638,16 +630,15 @@ function IsoCutaway({
       {/* lighting tuned to the palette */}
       <ambientLight intensity={0.5} />
       <directionalLight position={[12, 18, 8]} intensity={1.15} color="#fff4f0" />
-      <pointLight position={[-14, 6, 7]} intensity={10} distance={44} color={ACCENT} />
-      {/* warm glow that rises from the sealed roof in the final chapters */}
+      <pointLight position={[-16, 6, 8]} intensity={9} distance={48} color={ACCENT} />
       <pointLight
         ref={glowRef}
-        position={[roofCX, ROOF_Y + 1.4, roofCZ]}
+        position={[0, WROOF_Y + 1.6, 0]}
         intensity={0}
-        distance={22}
+        distance={26}
         color={ACCENT}
       />
-      <fog attach="fog" args={[BG, 22, 66]} />
+      <fog attach="fog" args={[BG, 26, 74]} />
     </group>
   );
 }
@@ -680,10 +671,10 @@ export default function ScrollScene() {
     <Canvas
       dpr={[1, 1.75]}
       gl={{ antialias: true, powerPreference: "high-performance", alpha: true }}
-      camera={{ position: [24, 20, 24], fov: 34, near: 0.1, far: 140 }}
+      camera={{ position: [26, 21, 26], fov: 34, near: 0.1, far: 150 }}
     >
       <color attach="background" args={[BG]} />
-      <IsoCutaway progressRef={progressRef} reduced={reducedRef.current} />
+      <BlueprintBuild progressRef={progressRef} reduced={reducedRef.current} />
     </Canvas>
   );
 }
