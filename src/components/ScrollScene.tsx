@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Edges, Instances, Instance } from "@react-three/drei";
+import { Edges } from "@react-three/drei";
 import * as THREE from "three";
 
 /* ------------------------------------------------------------------------
